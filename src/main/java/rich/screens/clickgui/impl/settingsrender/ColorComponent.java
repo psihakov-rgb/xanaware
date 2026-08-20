@@ -1,912 +1,241 @@
 package rich.screens.clickgui.impl.settingsrender;
 
 import net.minecraft.client.gui.DrawContext;
-import org.lwjgl.glfw.GLFW;
 import rich.modules.module.setting.implement.ColorSetting;
+import rich.screens.clickgui.anim.Ease;
+import rich.screens.clickgui.anim.Tween;
+import rich.screens.clickgui.sound.GuiSounds;
+import rich.screens.clickgui.theme.GuiTheme;
 import rich.util.interfaces.AbstractSettingComponent;
 import rich.util.render.Render2D;
-import rich.util.render.shader.Scissor;
 import rich.util.render.font.Fonts;
 
-import java.awt.*;
+import java.awt.Color;
 
-public class ColorComponent extends AbstractSettingComponent {
-    private final ColorSetting colorSetting;
-    private boolean expanded = false;
-    private float expandAnimation = 0f;
-    private float hoverAnimation = 0f;
-    private float previewHoverAnimation = 0f;
-    private float contentAlpha = 0f;
+/**
+ * Color setting: collapsed swatch row that expands into a palette, hue strip,
+ * alpha strip and presets. Uses Slide Down / Up and the bottle sound.
+ */
+public final class ColorComponent extends AbstractSettingComponent implements SizedComponent {
 
-    private boolean draggingPalette = false;
-    private boolean draggingHue = false;
-    private boolean draggingAlpha = false;
+    private static final float ROW = 18f;
+    private static final float PALETTE = 44f;
+    private static final float STRIP = 6f;
 
-    private float paletteHandleAnimation = 0f;
-    private float hueHandleAnimation = 0f;
-    private float alphaHandleAnimation = 0f;
+    private static final int[] HUE = new int[7];
+    private static final int[] PALETTE_9 = new int[9];
+    private static final int[] ALPHA_9 = new int[9];
+    private static final int[] SEGMENT_9 = new int[9];
 
-    private boolean hexInputActive = false;
-    private String hexInputText = "";
-    private int hexCursorPosition = 0;
-    private int hexSelectionStart = -1;
-    private int hexSelectionEnd = -1;
-    private float hexInputAnimation = 0f;
-    private float hexSelectionAnimation = 0f;
-    private float hexCursorBlinkAnimation = 0f;
+    static {
+        for (int i = 0; i < HUE.length; i++) {
+            HUE[i] = 0xFF000000 | (Color.HSBtoRGB(i / (float) (HUE.length - 1), 1f, 1f) & 0xFFFFFF);
+        }
+    }
 
-    private float displayHue;
-    private float displaySaturation;
-    private float displayBrightness;
-    private float displayAlpha;
-    private boolean colorInitialized = false;
+    private final ColorSetting setting;
+    private final Tween expand = new Tween(240f, Tween.Curve.OUT_EXPO).complete(false);
 
-    private long lastUpdateTime = System.currentTimeMillis();
-
-    private static final float ANIMATION_SPEED = 8f;
-    private static final float FAST_ANIMATION_SPEED = 15f;
-    private static final float COLOR_TRANSITION_SPEED = 6f;
-    private static final float CONTENT_FADE_SPEED = 15f;
-    private static final float PALETTE_SIZE = 70f;
-    private static final float SLIDER_WIDTH = 8f;
-    private static final float SPACING = 4f;
-    private static final float PREVIEW_SIZE = 12f;
+    private float hover;
+    private boolean open;
+    private boolean hoveredLastFrame;
+    private int dragging = -1; // 0 palette, 1 hue, 2 alpha
 
     public ColorComponent(ColorSetting setting) {
         super(setting);
-        this.colorSetting = setting;
-        updateHexFromColor();
-
-        displayHue = setting.getHue();
-        displaySaturation = setting.getSaturation();
-        displayBrightness = setting.getBrightness();
-        displayAlpha = setting.getAlpha();
-        colorInitialized = true;
+        this.setting = setting;
     }
 
-    private float getDeltaTime() {
-        long currentTime = System.currentTimeMillis();
-        float deltaTime = Math.min((currentTime - lastUpdateTime) / 1000f, 0.1f);
-        lastUpdateTime = currentTime;
-        return deltaTime;
-    }
-
-    private float lerp(float current, float target, float speed) {
-        float diff = target - current;
-        if (Math.abs(diff) < 0.001f) {
-            return target;
-        }
-        return current + diff * Math.min(speed, 1f);
-    }
-
-    private float lerpHue(float current, float target, float speed) {
-        float diff = target - current;
-
-        if (diff > 0.5f) {
-            diff -= 1f;
-        } else if (diff < -0.5f) {
-            diff += 1f;
-        }
-
-        if (Math.abs(diff) < 0.001f) {
-            return target;
-        }
-        float result = current + diff * Math.min(speed, 1f);
-
-        if (result < 0f) result += 1f;
-        if (result > 1f) result -= 1f;
-
-        return result;
-    }
-
-    private int clamp(int value) {
-        return Math.max(0, Math.min(255, value));
-    }
-
-    private void updateDisplayColors(float deltaTime) {
-        if (!colorInitialized) {
-            displayHue = colorSetting.getHue();
-            displaySaturation = colorSetting.getSaturation();
-            displayBrightness = colorSetting.getBrightness();
-            displayAlpha = colorSetting.getAlpha();
-            colorInitialized = true;
-            return;
-        }
-
-        float speed = deltaTime * COLOR_TRANSITION_SPEED;
-
-        if (draggingPalette || draggingHue || draggingAlpha) {
-            displayHue = colorSetting.getHue();
-            displaySaturation = colorSetting.getSaturation();
-            displayBrightness = colorSetting.getBrightness();
-            displayAlpha = colorSetting.getAlpha();
-        } else {
-            displayHue = lerpHue(displayHue, colorSetting.getHue(), speed);
-            displaySaturation = lerp(displaySaturation, colorSetting.getSaturation(), speed);
-            displayBrightness = lerp(displayBrightness, colorSetting.getBrightness(), speed);
-            displayAlpha = lerp(displayAlpha, colorSetting.getAlpha(), speed);
-        }
-    }
-
-    private int getDisplayColor() {
-        int rgb = Color.HSBtoRGB(displayHue, displaySaturation, displayBrightness);
-        int alphaInt = Math.round(displayAlpha * 255);
-        return (alphaInt << 24) | (rgb & 0x00FFFFFF);
-    }
-
-    private int getDisplayColorNoAlpha() {
-        return Color.HSBtoRGB(displayHue, displaySaturation, displayBrightness) | 0xFF000000;
-    }
-
-    private Color applyContentAlpha(Color color) {
-        int newAlpha = Math.max(0, Math.min(255, (int)(color.getAlpha() * alphaMultiplier * contentAlpha)));
-        return new Color(color.getRed(), color.getGreen(), color.getBlue(), newAlpha);
-    }
-
-    private int applyContentAlpha(int color) {
-        int a = (color >> 24) & 0xFF;
-        int r = (color >> 16) & 0xFF;
-        int g = (color >> 8) & 0xFF;
-        int b = color & 0xFF;
-        int newAlpha = Math.max(0, Math.min(255, (int)(a * alphaMultiplier * contentAlpha)));
-        return (newAlpha << 24) | (r << 16) | (g << 8) | b;
-    }
-
-    private boolean isControlDown() {
-        long window = mc.getWindow().getHandle();
-        return GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
-                GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
-    }
-
-    private boolean isShiftDown() {
-        long window = mc.getWindow().getHandle();
-        return GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
-                GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
-    }
-
-    private boolean hasHexSelection() {
-        return hexSelectionStart != -1 && hexSelectionEnd != -1 && hexSelectionStart != hexSelectionEnd;
-    }
-
-    private int getHexSelectionStart() {
-        return Math.min(hexSelectionStart, hexSelectionEnd);
-    }
-
-    private int getHexSelectionEnd() {
-        return Math.max(hexSelectionStart, hexSelectionEnd);
-    }
-
-    private String getHexSelectedText() {
-        if (!hasHexSelection()) return "";
-        return hexInputText.substring(getHexSelectionStart(), getHexSelectionEnd());
-    }
-
-    private void clearHexSelection() {
-        hexSelectionStart = -1;
-        hexSelectionEnd = -1;
-    }
-
-    private void selectAllHexText() {
-        hexSelectionStart = 0;
-        hexSelectionEnd = hexInputText.length();
-        hexCursorPosition = hexInputText.length();
-    }
-
-    private void deleteHexSelectedText() {
-        if (hasHexSelection()) {
-            int start = getHexSelectionStart();
-            int end = getHexSelectionEnd();
-            hexInputText = hexInputText.substring(0, start) + hexInputText.substring(end);
-            hexCursorPosition = start;
-            clearHexSelection();
-        }
-    }
-
-    private void pasteHexFromClipboard() {
-        String clipboardText = GLFW.glfwGetClipboardString(mc.getWindow().getHandle());
-        if (clipboardText != null && !clipboardText.isEmpty()) {
-            clipboardText = clipboardText.replace("#", "").replaceAll("[^0-9A-Fa-f]", "").toUpperCase();
-
-            if (hasHexSelection()) {
-                deleteHexSelectedText();
-            }
-
-            int remainingSpace = 8 - hexInputText.length();
-            if (clipboardText.length() > remainingSpace) {
-                clipboardText = clipboardText.substring(0, remainingSpace);
-            }
-
-            if (!clipboardText.isEmpty()) {
-                hexInputText = hexInputText.substring(0, hexCursorPosition) + clipboardText + hexInputText.substring(hexCursorPosition);
-                hexCursorPosition += clipboardText.length();
-            }
-        }
-    }
-
-    private void copyHexToClipboard() {
-        if (hasHexSelection()) {
-            GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), "#" + getHexSelectedText());
-        } else if (!hexInputText.isEmpty()) {
-            GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), "#" + hexInputText);
-        }
-    }
-
-    private void moveHexCursor(int direction) {
-        if (hasHexSelection() && !isShiftDown()) {
-            if (direction < 0) {
-                hexCursorPosition = getHexSelectionStart();
-            } else {
-                hexCursorPosition = getHexSelectionEnd();
-            }
-            clearHexSelection();
-        } else {
-            if (direction < 0 && hexCursorPosition > 0) {
-                hexCursorPosition--;
-            } else if (direction > 0 && hexCursorPosition < hexInputText.length()) {
-                hexCursorPosition++;
-            }
-            updateHexSelectionAfterCursorMove();
-        }
-    }
-
-    private void updateHexSelectionAfterCursorMove() {
-        if (isShiftDown()) {
-            if (hexSelectionStart == -1) {
-                hexSelectionStart = hexSelectionEnd != -1 ? hexSelectionEnd : hexCursorPosition;
-            }
-            hexSelectionEnd = hexCursorPosition;
-        } else {
-            clearHexSelection();
-        }
+    @Override
+    public float desiredHeight() {
+        float extra = PALETTE + STRIP * 2f + 14f;
+        if (setting.getPresets() != null && setting.getPresets().length > 0) extra += 12f;
+        return ROW + extra * expand.output();
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        float deltaTime = getDeltaTime();
-
-        updateDisplayColors(deltaTime);
-
-        if (draggingPalette) {
-            updatePalette(mouseX, mouseY);
-        }
-        if (draggingHue) {
-            updateHue(mouseY);
-        }
-        if (draggingAlpha) {
-            updateAlpha(mouseY);
-        }
-
         boolean hovered = isHover(mouseX, mouseY);
-        boolean previewHovered = isPreviewHover(mouseX, mouseY);
+        if (hovered && !hoveredLastFrame) GuiSounds.hover();
+        hoveredLastFrame = hovered;
 
-        hoverAnimation = lerp(hoverAnimation, hovered ? 1f : 0f, deltaTime * ANIMATION_SPEED);
-        previewHoverAnimation = lerp(previewHoverAnimation, previewHovered ? 1f : 0f, deltaTime * ANIMATION_SPEED);
-        expandAnimation = lerp(expandAnimation, expanded ? 1f : 0f, deltaTime * ANIMATION_SPEED);
-        hexInputAnimation = lerp(hexInputAnimation, hexInputActive ? 1f : 0f, deltaTime * FAST_ANIMATION_SPEED);
-        hexSelectionAnimation = lerp(hexSelectionAnimation, hasHexSelection() ? 1f : 0f, deltaTime * ANIMATION_SPEED);
+        hover += ((hovered ? 1f : 0f) - hover) * Ease.approach(14f, delta);
+        float progress = expand.output();
 
-        if (hexInputActive) {
-            hexCursorBlinkAnimation += deltaTime * 2f;
-            if (hexCursorBlinkAnimation > 1f) hexCursorBlinkAnimation -= 1f;
-        } else {
-            hexCursorBlinkAnimation = 0f;
+        Fonts.BOLD.draw(setting.getName(), x, y + ROW / 2f - 3f, 6.4f,
+                applyAlpha(Ease.mixColor(GuiTheme.TEXT_DIM, GuiTheme.TEXT, Math.max(hover, progress))));
+
+        float swatch = 10f;
+        float swatchX = x + width - swatch;
+        float swatchY = y + ROW / 2f - swatch / 2f;
+        int solid = 0xFF000000 | (setting.getColorNoAlpha() & 0xFFFFFF);
+
+        Render2D.rect(swatchX, swatchY, swatch, swatch, applyAlpha(solid), 2.6f);
+        Render2D.outline(swatchX, swatchY, swatch, swatch, 0.8f,
+                applyAlpha(Ease.mixColor(GuiTheme.LINE, GuiTheme.TEXT_DIM, hover)), 2.6f);
+
+        if (progress <= 0.004f) return;
+
+        float paletteY = y + ROW + 3f - (1f - progress) * 6f;
+        int pure = 0xFF000000 | (Color.HSBtoRGB(setting.getHue(), 1f, 1f) & 0xFFFFFF);
+
+        PALETTE_9[0] = applyAlpha(0xFFFFFFFF, progress);
+        PALETTE_9[1] = applyAlpha(Ease.mixColor(0xFFFFFFFF, pure, 0.5f), progress);
+        PALETTE_9[2] = applyAlpha(pure, progress);
+        PALETTE_9[3] = applyAlpha(0xFF7F7F7F, progress);
+        PALETTE_9[4] = applyAlpha(Ease.mixColor(0xFF7F7F7F, pure, 0.5f), progress);
+        PALETTE_9[5] = applyAlpha(Ease.mixColor(pure, 0xFF000000, 0.22f), progress);
+        PALETTE_9[6] = applyAlpha(0xFF000000, progress);
+        PALETTE_9[7] = applyAlpha(0xFF000000, progress);
+        PALETTE_9[8] = applyAlpha(0xFF000000, progress);
+        Render2D.gradientRect9(x, paletteY, width, PALETTE, PALETTE_9, 3.5f);
+
+        float cursorX = x + setting.getSaturation() * width;
+        float cursorY = paletteY + (1f - setting.getBrightness()) * PALETTE;
+        Render2D.outline(cursorX - 2.2f, cursorY - 2.2f, 4.4f, 4.4f, 0.9f,
+                applyAlpha(0xFFFFFFFF, progress), 2.2f);
+
+        float hueY = paletteY + PALETTE + 4f;
+        int segments = HUE.length - 1;
+        float segmentWidth = width / segments;
+        for (int i = 0; i < segments; i++) {
+            int from = applyAlpha(HUE[i], progress);
+            int to = applyAlpha(HUE[i + 1], progress);
+            int mid = Ease.mixColor(from, to, 0.5f);
+
+            SEGMENT_9[0] = from;
+            SEGMENT_9[1] = mid;
+            SEGMENT_9[2] = to;
+            SEGMENT_9[3] = from;
+            SEGMENT_9[4] = mid;
+            SEGMENT_9[5] = to;
+            SEGMENT_9[6] = from;
+            SEGMENT_9[7] = mid;
+            SEGMENT_9[8] = to;
+
+            Render2D.gradientRect9(x + segmentWidth * i, hueY, segmentWidth, STRIP, SEGMENT_9, 0f);
         }
+        Render2D.rect(x + setting.getHue() * width - 0.9f, hueY - 1f, 1.8f, STRIP + 2f,
+                applyAlpha(0xFFFFFFFF, progress), 0.9f);
 
-        float contentAlphaTarget = expanded ? 1f : 0f;
-        float contentAlphaSpeed = expanded ? CONTENT_FADE_SPEED : CONTENT_FADE_SPEED * 1.5f;
-        contentAlpha = lerp(contentAlpha, contentAlphaTarget, deltaTime * contentAlphaSpeed);
+        float alphaY = hueY + STRIP + 4f;
+        int transparent = solid & 0x00FFFFFF;
+        ALPHA_9[0] = applyAlpha(transparent, progress);
+        ALPHA_9[1] = applyAlpha(Ease.withAlpha(solid, 0.5f), progress);
+        ALPHA_9[2] = applyAlpha(solid, progress);
+        ALPHA_9[3] = ALPHA_9[0];
+        ALPHA_9[4] = ALPHA_9[1];
+        ALPHA_9[5] = ALPHA_9[2];
+        ALPHA_9[6] = ALPHA_9[0];
+        ALPHA_9[7] = ALPHA_9[1];
+        ALPHA_9[8] = ALPHA_9[2];
+        Render2D.gradientRect9(x, alphaY, width, STRIP, ALPHA_9, 2f);
+        Render2D.rect(x + setting.getAlpha() * width - 0.9f, alphaY - 1f, 1.8f, STRIP + 2f,
+                applyAlpha(0xFFFFFFFF, progress), 0.9f);
 
-        paletteHandleAnimation = lerp(paletteHandleAnimation, draggingPalette ? 1f : 0f, deltaTime * FAST_ANIMATION_SPEED);
-        hueHandleAnimation = lerp(hueHandleAnimation, draggingHue ? 1f : 0f, deltaTime * FAST_ANIMATION_SPEED);
-        alphaHandleAnimation = lerp(alphaHandleAnimation, draggingAlpha ? 1f : 0f, deltaTime * FAST_ANIMATION_SPEED);
-
-        int iconAlpha = (int)(200 * alphaMultiplier);
-        Fonts.GUI_ICONS.draw("R", x + 0.5f, y + height / 2 - 11.5f, 16, new Color(210, 210, 210, iconAlpha).getRGB());
-
-        Fonts.BOLD.draw(colorSetting.getName(), x + 11.5f, y + height / 2 - 6.5f, 6, applyAlpha(new Color(210, 210, 220, 200)).getRGB());
-
-        String description = colorSetting.getDescription();
-        if (description != null && !description.isEmpty()) {
-            Fonts.BOLD.draw(description, x + 8.5f, y + height / 2 + 0.5f, 5, applyAlpha(new Color(128, 128, 128, 128)).getRGB());
-        }
-
-        renderColorPreview(mouseX, mouseY);
-
-        if (expandAnimation > 0.01f) {
-            renderColorPicker(context, mouseX, mouseY, deltaTime);
-        }
-    }
-
-    private void renderColorPreview(int mouseX, int mouseY) {
-        float previewX = x + width - 14;
-        float previewY = y + height / 2 / 2;
-
-        float scale = 1f + previewHoverAnimation * 0.1f;
-        float scaledX = previewX - scale / 2 + 1;
-        float scaledY = previewY - scale / 2;
-
-        int colorValue = getDisplayColor();
-        Color previewColor = new Color(colorValue, true);
-        Render2D.rect(scaledX + 0.5f, scaledY + 0.5f, 9, 9, applyAlpha(previewColor).getRGB(), 15);
-        int outlineAlpha = clamp((int)((255 + previewHoverAnimation * 60) * alphaMultiplier));
-
-        Render2D.outline(scaledX, scaledY, 10, 10, 1f, new Color(125, 125, 125, outlineAlpha).getRGB(), 15);
-    }
-
-    private void renderColorPicker(DrawContext context, int mouseX, int mouseY, float deltaTime) {
-        float pickerX = x;
-        float pickerY = y + height + SPACING;
-        float pickerWidth = width;
-
-        float totalExpandedHeight = PALETTE_SIZE + SPACING + 18 + SPACING;
-        float visibleHeight = totalExpandedHeight * expandAnimation;
-
-        int outlineAlpha = clamp((int)(60 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.outline(pickerX, pickerY, pickerWidth, visibleHeight + 2, 0.5f,
-                new Color(80, 80, 85, outlineAlpha).getRGB(), 4f);
-
-        if (expandAnimation < 0.3f || contentAlpha < 0.01f) return;
-
-        Scissor.enable(pickerX, pickerY, pickerWidth, visibleHeight,2);
-
-        float contentX = pickerX + SPACING;
-        float contentY = pickerY + SPACING;
-        float contentWidth = pickerWidth - SPACING * 2;
-
-        float slidersWidth = SLIDER_WIDTH * 2 + SPACING;
-        float paletteWidth = contentWidth - slidersWidth - SPACING;
-
-        renderHueSlider(contentX, contentY, SLIDER_WIDTH, PALETTE_SIZE, mouseX, mouseY);
-        renderAlphaSlider(contentX + SLIDER_WIDTH + SPACING, contentY, SLIDER_WIDTH, PALETTE_SIZE, mouseX, mouseY);
-        renderSaturationBrightnessPalette(contentX + slidersWidth + SPACING, contentY, paletteWidth, PALETTE_SIZE, mouseX, mouseY);
-
-        contentY += PALETTE_SIZE + SPACING;
-        renderHexInput(contentX, contentY, contentWidth, 16, mouseX, mouseY);
-
-        Scissor.disable();
-    }
-
-    private void renderSaturationBrightnessPalette(float paletteX, float paletteY, float paletteWidth, float paletteHeight, int mouseX, int mouseY) {
-        int pureColor = Color.HSBtoRGB(displayHue, 1f, 1f);
-        Color pure = new Color(pureColor);
-
-        int[] gradientColors = {
-                applyContentAlpha(Color.WHITE).getRGB(),
-                applyContentAlpha(pure).getRGB(),
-                applyContentAlpha(pure).getRGB(),
-                applyContentAlpha(Color.WHITE).getRGB()
-        };
-        Render2D.gradientRect(paletteX, paletteY, paletteWidth, paletteHeight - 0.5f, gradientColors, 5f);
-
-        int[] blackGradient = {
-                new Color(0, 0, 0, 0).getRGB(),
-                new Color(0, 0, 0, 0).getRGB(),
-                applyContentAlpha(Color.BLACK).getRGB(),
-                applyContentAlpha(Color.BLACK).getRGB()
-        };
-
-        Render2D.gradientRect(paletteX, paletteY, paletteWidth, paletteHeight, blackGradient, 3f);
-
-        float handleX = paletteX + displaySaturation * paletteWidth;
-        float handleY = paletteY + (1f - displayBrightness) * paletteHeight;
-        float handleSize = 6f + paletteHandleAnimation * 2f;
-
-        int handleOutlineAlpha = clamp((int)(255 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.rect(handleX - handleSize / 2, handleY - handleSize / 2, handleSize, handleSize,
-                new Color(255, 255, 255, handleOutlineAlpha).getRGB(), handleSize / 2);
-
-        int currentColor = Color.HSBtoRGB(displayHue, displaySaturation, displayBrightness);
-        Color handleColor = new Color(currentColor);
-        Render2D.rect(handleX - handleSize / 2 + 1, handleY - handleSize / 2 + 1, handleSize - 2, handleSize - 2,
-                applyContentAlpha(handleColor).getRGB(), (handleSize - 2) / 2);
-    }
-
-    private void renderHueSlider(float sliderX, float sliderY, float sliderWidth, float sliderHeight, int mouseX, int mouseY) {
-        int[] hueColors = {
-                Color.HSBtoRGB(0f, 1f, 1f),
-                Color.HSBtoRGB(1f/6f, 1f, 1f),
-                Color.HSBtoRGB(2f/6f, 1f, 1f),
-                Color.HSBtoRGB(3f/6f, 1f, 1f),
-                Color.HSBtoRGB(4f/6f, 1f, 1f),
-                Color.HSBtoRGB(5f/6f, 1f, 1f),
-                Color.HSBtoRGB(1f, 1f, 1f)
-        };
-
-        float segmentHeight = sliderHeight / 6f;
-
-        int[] colorsTop = { applyContentAlpha(new Color(hueColors[0])).getRGB(), applyContentAlpha(new Color(hueColors[0])).getRGB(), applyContentAlpha(new Color(hueColors[1])).getRGB(), applyContentAlpha(new Color(hueColors[1])).getRGB() };
-        Render2D.gradientRect(sliderX, sliderY, sliderWidth, segmentHeight, colorsTop, 2f, 2f, 0f, 0f);
-
-        for (int i = 1; i < 5; i++) {
-            float segY = sliderY + i * segmentHeight;
-            int[] colors = { applyContentAlpha(new Color(hueColors[i])).getRGB(), applyContentAlpha(new Color(hueColors[i])).getRGB(), applyContentAlpha(new Color(hueColors[i + 1])).getRGB(), applyContentAlpha(new Color(hueColors[i + 1])).getRGB() };
-            Render2D.gradientRect(sliderX, segY - 0.5f, sliderWidth, segmentHeight + 0.5f, colors, 0f);
-        }
-
-        int[] colorsBottom = { applyContentAlpha(new Color(hueColors[5])).getRGB(), applyContentAlpha(new Color(hueColors[5])).getRGB(), applyContentAlpha(new Color(hueColors[6])).getRGB(), applyContentAlpha(new Color(hueColors[6])).getRGB() };
-        Render2D.gradientRect(sliderX, sliderY + 5 * segmentHeight - 0.5f, sliderWidth, segmentHeight, colorsBottom, 0f, 0f, 2f, 2f);
-
-        int hueOutlineAlpha = clamp((int)(80 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.outline(sliderX, sliderY, sliderWidth, sliderHeight, 0.5f,
-                new Color(100, 100, 105, hueOutlineAlpha).getRGB(), 3f);
-
-        float handleY = sliderY + displayHue * sliderHeight;
-        float handleHeight = 3f + hueHandleAnimation * 1f;
-        float handleWidth = sliderWidth + 2f;
-
-        int handleAlpha = clamp((int)(255 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.rect(sliderX - 1, handleY - handleHeight / 2, handleWidth, handleHeight,
-                new Color(255, 255, 255, handleAlpha).getRGB(), 1.5f);
-        int handleShadowAlpha = clamp((int)(100 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.outline(sliderX - 1, handleY - handleHeight / 2, handleWidth, handleHeight, 0.5f,
-                new Color(0, 0, 0, handleShadowAlpha).getRGB(), 1.5f);
-    }
-
-    private void renderAlphaSlider(float sliderX, float sliderY, float sliderWidth, float sliderHeight, int mouseX, int mouseY) {
-        int checkAlpha = clamp((int)(150 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.rect(sliderX, sliderY, sliderWidth, sliderHeight, new Color(180, 180, 180, checkAlpha).getRGB(), 2f);
-
-        int baseColor = getDisplayColorNoAlpha() & 0x00FFFFFF;
-
-        int transparentColor = baseColor;
-        int opaqueColor = baseColor | 0xFF000000;
-
-        int[] alphaGradient = {
-                applyContentAlpha(new Color(transparentColor, true), 0f).getRGB(),
-                applyContentAlpha(new Color(transparentColor, true), 0f).getRGB(),
-                applyContentAlpha(new Color(opaqueColor, true)).getRGB(),
-                applyContentAlpha(new Color(opaqueColor, true)).getRGB()
-        };
-        Render2D.gradientRect(sliderX, sliderY, sliderWidth, sliderHeight, alphaGradient, 2f);
-
-        int alphaOutlineAlpha = clamp((int)(80 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.outline(sliderX, sliderY, sliderWidth, sliderHeight, 0.5f,
-                new Color(100, 100, 105, alphaOutlineAlpha).getRGB(), 3f);
-
-        float handleY = sliderY + displayAlpha * sliderHeight;
-        float handleHeight = 3f + alphaHandleAnimation * 1f;
-        float handleWidth = sliderWidth + 2f;
-
-        int handleAlpha = clamp((int)(255 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.rect(sliderX - 1, handleY - handleHeight / 2, handleWidth, handleHeight,
-                new Color(255, 255, 255, handleAlpha).getRGB(), 1.5f);
-        int handleShadowAlpha = clamp((int)(100 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.outline(sliderX - 1, handleY - handleHeight / 2, handleWidth, handleHeight, 0.5f,
-                new Color(0, 0, 0, handleShadowAlpha).getRGB(), 1.5f);
-    }
-
-    private Color applyContentAlpha(Color color, float extraAlpha) {
-        int newAlpha = Math.max(0, Math.min(255, (int)(color.getAlpha() * alphaMultiplier * contentAlpha * extraAlpha)));
-        return new Color(color.getRed(), color.getGreen(), color.getBlue(), newAlpha);
-    }
-
-    private void renderHexInput(float inputX, float inputY, float inputWidth, float inputHeight, int mouseX, int mouseY) {
-        boolean inputHovered = mouseX >= inputX && mouseX <= inputX + inputWidth &&
-                mouseY >= inputY && mouseY <= inputY + inputHeight;
-
-        int bgAlpha = clamp((int)((40 + hexInputAnimation * 20 + (inputHovered ? 10 : 0)) * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.rect(inputX, inputY, inputWidth, inputHeight, new Color(35, 35, 40, bgAlpha).getRGB(), 3f);
-
-        int hexOutlineAlpha = clamp((int)((60 + hexInputAnimation * 80 + (inputHovered ? 20 : 0)) * expandAnimation * contentAlpha * alphaMultiplier));
-        Color outlineColor = hexInputActive
-                ? new Color(100, 140, 180, hexOutlineAlpha)
-                : new Color(80, 80, 85, hexOutlineAlpha);
-        Render2D.outline(inputX, inputY, inputWidth, inputHeight, 0.5f, outlineColor.getRGB(), 3f);
-
-        int iconAlpha = clamp((int)(200 * expandAnimation * contentAlpha * alphaMultiplier));
-        Fonts.GUI_ICONS.draw("V", inputX + 4, inputY + inputHeight / 2 - 7.5f, 12, new Color(210, 210, 210, iconAlpha).getRGB());
-
-        String label = "HEX: ";
-        float iconOffset = 10f;
-        float labelWidth = Fonts.BOLD.getWidth(label, 5);
-        int labelAlpha = clamp((int)(150 * expandAnimation * contentAlpha * alphaMultiplier));
-        Fonts.BOLD.draw(label, inputX + 4 + iconOffset, inputY + inputHeight / 2 - 2.5f, 5,
-                new Color(140, 140, 150, labelAlpha).getRGB());
-
-        String displayText = hexInputActive ? hexInputText : getDisplayHexString();
-        float textStartX = inputX + 4 + iconOffset + labelWidth;
-        float textY = inputY + inputHeight / 2 - 2.5f;
-
-        if (hexInputActive && hasHexSelection() && hexSelectionAnimation > 0.01f) {
-            int start = getHexSelectionStart();
-            int end = getHexSelectionEnd();
-            String beforeSelection = "#" + hexInputText.substring(0, start);
-            String selection = hexInputText.substring(start, end);
-
-            float selectionX = textStartX + Fonts.BOLD.getWidth(beforeSelection, 5);
-            float selectionWidth = Fonts.BOLD.getWidth(selection, 5);
-
-            int selAlpha = clamp((int)(100 * hexSelectionAnimation * expandAnimation * contentAlpha * alphaMultiplier));
-//            Render2D.rect(selectionX - 1, inputY + 4.25f, selectionWidth + 2, inputHeight - 8,
-//                    new Color(100, 140, 180, selAlpha).getRGB(), 2f);
-        }
-
-        int textAlpha = clamp((int)((180 + hexInputAnimation * 40) * expandAnimation * contentAlpha * alphaMultiplier));
-        Fonts.BOLD.draw("#" + displayText, textStartX, textY, 5,
-                new Color(210, 210, 220, textAlpha).getRGB());
-
-        if (hexInputActive && !hasHexSelection()) {
-            float cursorAlpha = (float)(Math.sin(hexCursorBlinkAnimation * Math.PI * 2) * 0.5 + 0.5);
-            if (cursorAlpha > 0.3f) {
-                String beforeCursor = "#" + hexInputText.substring(0, hexCursorPosition);
-                float cursorX = textStartX + Fonts.BOLD.getWidth(beforeCursor, 5);
-                int cursorAlphaInt = clamp((int)(255 * cursorAlpha * hexInputAnimation * expandAnimation * contentAlpha * alphaMultiplier));
-                Render2D.rect(cursorX, inputY + 3, 0.5f, inputHeight - 6,
-                        new Color(180, 180, 185, cursorAlphaInt).getRGB(), 0f);
+        int[] presets = setting.getPresets();
+        if (presets != null && presets.length > 0) {
+            float presetY = alphaY + STRIP + 4f;
+            float presetSize = 7.5f;
+            float gap = 3f;
+            for (int i = 0; i < presets.length; i++) {
+                float px = x + i * (presetSize + gap);
+                if (px + presetSize > x + width) break;
+                Render2D.rect(px, presetY, presetSize, presetSize,
+                        applyAlpha(0xFF000000 | (presets[i] & 0xFFFFFF), progress), 2f);
             }
         }
-
-        float miniPreviewX = inputX + inputWidth - 15;
-        float miniPreviewY = inputY + 3;
-        float miniPreviewSize = inputHeight - 6;
-
-        int miniCheckAlpha = clamp((int)(120 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.rect(miniPreviewX, miniPreviewY, miniPreviewSize, miniPreviewSize,
-                new Color(150, 150, 150, miniCheckAlpha).getRGB(), 3f);
-        Render2D.rect(miniPreviewX, miniPreviewY, miniPreviewSize, miniPreviewSize,
-                applyContentAlpha(new Color(getDisplayColor(), true)).getRGB(), 3f);
-        int miniOutlineAlpha = clamp((int)(80 * expandAnimation * contentAlpha * alphaMultiplier));
-        Render2D.outline(miniPreviewX, miniPreviewY, miniPreviewSize, miniPreviewSize, 0.5f,
-                new Color(80, 80, 85, miniOutlineAlpha).getRGB(), 3f);
     }
 
-    private String getDisplayHexString() {
-        int color = getDisplayColor();
-        int a = (color >> 24) & 0xFF;
-        int r = (color >> 16) & 0xFF;
-        int g = (color >> 8) & 0xFF;
-        int b = color & 0xFF;
-        return String.format("%02X%02X%02X%02X", r, g, b, a);
-    }
-
-    private boolean isPreviewHover(double mouseX, double mouseY) {
-        float previewX = x + width - PREVIEW_SIZE - 4;
-        float previewY = y + height / 2 - PREVIEW_SIZE / 2;
-        return mouseX >= previewX && mouseX <= previewX + PREVIEW_SIZE &&
-                mouseY >= previewY && mouseY <= previewY + PREVIEW_SIZE;
-    }
-
-    private boolean isPaletteHover(double mouseX, double mouseY) {
-        float pickerX = x;
-        float pickerY = y + height + SPACING;
-        float contentX = pickerX + SPACING;
-        float contentY = pickerY + SPACING;
-        float contentWidth = width - SPACING * 2;
-        float slidersWidth = SLIDER_WIDTH * 2 + SPACING;
-        float paletteWidth = contentWidth - slidersWidth - SPACING;
-        float paletteX = contentX + slidersWidth + SPACING;
-        return mouseX >= paletteX && mouseX <= paletteX + paletteWidth &&
-                mouseY >= contentY && mouseY <= contentY + PALETTE_SIZE;
-    }
-
-    private boolean isHueSliderHover(double mouseX, double mouseY) {
-        float pickerX = x;
-        float pickerY = y + height + SPACING;
-        float contentX = pickerX + SPACING;
-        float contentY = pickerY + SPACING;
-        return mouseX >= contentX && mouseX <= contentX + SLIDER_WIDTH &&
-                mouseY >= contentY && mouseY <= contentY + PALETTE_SIZE;
-    }
-
-    private boolean isAlphaSliderHover(double mouseX, double mouseY) {
-        float pickerX = x;
-        float pickerY = y + height + SPACING;
-        float contentX = pickerX + SPACING;
-        float contentY = pickerY + SPACING;
-        float alphaSliderX = contentX + SLIDER_WIDTH + SPACING;
-        return mouseX >= alphaSliderX && mouseX <= alphaSliderX + SLIDER_WIDTH &&
-                mouseY >= contentY && mouseY <= contentY + PALETTE_SIZE;
-    }
-
-    private boolean isHexInputHover(double mouseX, double mouseY) {
-        float pickerX = x;
-        float pickerY = y + height + SPACING;
-        float contentX = pickerX + SPACING;
-        float contentY = pickerY + SPACING + PALETTE_SIZE + SPACING;
-        float contentWidth = width - SPACING * 2;
-        return mouseX >= contentX && mouseX <= contentX + contentWidth &&
-                mouseY >= contentY && mouseY <= contentY + 16;
+    @Override
+    public boolean isHover(double mouseX, double mouseY) {
+        return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + ROW;
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button == 0) {
-            if (isPreviewHover(mouseX, mouseY)) {
-                expanded = !expanded;
-                if (!expanded) {
-                    hexInputActive = false;
-                    draggingPalette = false;
-                    draggingHue = false;
-                    draggingAlpha = false;
-                    clearHexSelection();
-                }
-                return true;
-            }
+        if (button != 0) return false;
 
-            if (expanded && expandAnimation > 0.8f && contentAlpha > 0.5f) {
-                if (isPaletteHover(mouseX, mouseY)) {
-                    draggingPalette = true;
-                    updatePalette(mouseX, mouseY);
-                    hexInputActive = false;
-                    clearHexSelection();
-                    return true;
-                }
+        if (isHover(mouseX, mouseY)) {
+            open = !open;
+            expand.play(open);
+            GuiSounds.click();
+            return true;
+        }
 
-                if (isHueSliderHover(mouseX, mouseY)) {
-                    draggingHue = true;
-                    updateHue(mouseY);
-                    hexInputActive = false;
-                    clearHexSelection();
-                    return true;
-                }
+        if (!open) return false;
 
-                if (isAlphaSliderHover(mouseX, mouseY)) {
-                    draggingAlpha = true;
-                    updateAlpha(mouseY);
-                    hexInputActive = false;
-                    clearHexSelection();
-                    return true;
-                }
+        float paletteY = y + ROW + 3f;
+        if (inside(mouseX, mouseY, x, paletteY, width, PALETTE)) {
+            dragging = 0;
+            applyPalette(mouseX, mouseY, paletteY);
+            GuiSounds.slider();
+            return true;
+        }
 
-                if (isHexInputHover(mouseX, mouseY)) {
-                    hexInputActive = true;
-                    hexInputText = getHexString();
-                    hexCursorPosition = hexInputText.length();
-                    hexSelectionStart = 0;
-                    hexSelectionEnd = hexInputText.length();
+        float hueY = paletteY + PALETTE + 4f;
+        if (inside(mouseX, mouseY, x, hueY, width, STRIP)) {
+            dragging = 1;
+            setting.setHue(Ease.clamp01((float) ((mouseX - x) / width)));
+            GuiSounds.slider();
+            return true;
+        }
+
+        float alphaY = hueY + STRIP + 4f;
+        if (inside(mouseX, mouseY, x, alphaY, width, STRIP)) {
+            dragging = 2;
+            setting.setAlpha(Ease.clamp01((float) ((mouseX - x) / width)));
+            GuiSounds.slider();
+            return true;
+        }
+
+        int[] presets = setting.getPresets();
+        if (presets != null && presets.length > 0) {
+            float presetY = alphaY + STRIP + 4f;
+            float presetSize = 7.5f;
+            float gap = 3f;
+            for (int i = 0; i < presets.length; i++) {
+                float px = x + i * (presetSize + gap);
+                if (inside(mouseX, mouseY, px, presetY, presetSize, presetSize)) {
+                    setting.setColor(presets[i]);
+                    GuiSounds.click();
                     return true;
-                } else if (hexInputActive) {
-                    applyHexInput();
-                    hexInputActive = false;
-                    clearHexSelection();
                 }
             }
         }
-        return false;
-    }
 
-    @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        if (button == 0) {
-            boolean wasDragging = draggingPalette || draggingHue || draggingAlpha;
-            draggingPalette = false;
-            draggingHue = false;
-            draggingAlpha = false;
-            if (wasDragging) {
-                updateHexFromColor();
-                return true;
-            }
-        }
         return false;
     }
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
-        if (button == 0) {
-            if (draggingPalette) {
-                updatePalette(mouseX, mouseY);
-                return true;
-            }
-            if (draggingHue) {
-                updateHue(mouseY);
-                return true;
-            }
-            if (draggingAlpha) {
-                updateAlpha(mouseY);
-                return true;
+        if (dragging < 0) return false;
+
+        float paletteY = y + ROW + 3f;
+        switch (dragging) {
+            case 0 -> applyPalette(mouseX, mouseY, paletteY);
+            case 1 -> setting.setHue(Ease.clamp01((float) ((mouseX - x) / width)));
+            case 2 -> setting.setAlpha(Ease.clamp01((float) ((mouseX - x) / width)));
+            default -> {
             }
         }
-        return false;
+        GuiSounds.slider();
+        return true;
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (!hexInputActive) return false;
-
-        if (isControlDown()) {
-            switch (keyCode) {
-                case GLFW.GLFW_KEY_A -> {
-                    selectAllHexText();
-                    return true;
-                }
-                case GLFW.GLFW_KEY_V -> {
-                    pasteHexFromClipboard();
-                    return true;
-                }
-                case GLFW.GLFW_KEY_C -> {
-                    copyHexToClipboard();
-                    return true;
-                }
-                case GLFW.GLFW_KEY_X -> {
-                    if (hasHexSelection()) {
-                        copyHexToClipboard();
-                        deleteHexSelectedText();
-                    }
-                    return true;
-                }
-            }
-        }
-
-        switch (keyCode) {
-            case GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> {
-                applyHexInput();
-                hexInputActive = false;
-                clearHexSelection();
-                return true;
-            }
-            case GLFW.GLFW_KEY_ESCAPE -> {
-                hexInputActive = false;
-                clearHexSelection();
-                return true;
-            }
-            case GLFW.GLFW_KEY_BACKSPACE -> {
-                if (hasHexSelection()) {
-                    deleteHexSelectedText();
-                } else if (hexCursorPosition > 0) {
-                    hexInputText = hexInputText.substring(0, hexCursorPosition - 1) + hexInputText.substring(hexCursorPosition);
-                    hexCursorPosition--;
-                }
-                return true;
-            }
-            case GLFW.GLFW_KEY_DELETE -> {
-                if (hasHexSelection()) {
-                    deleteHexSelectedText();
-                } else if (hexCursorPosition < hexInputText.length()) {
-                    hexInputText = hexInputText.substring(0, hexCursorPosition) + hexInputText.substring(hexCursorPosition + 1);
-                }
-                return true;
-            }
-            case GLFW.GLFW_KEY_LEFT -> {
-                moveHexCursor(-1);
-                return true;
-            }
-            case GLFW.GLFW_KEY_RIGHT -> {
-                moveHexCursor(1);
-                return true;
-            }
-            case GLFW.GLFW_KEY_HOME -> {
-                hexCursorPosition = 0;
-                updateHexSelectionAfterCursorMove();
-                return true;
-            }
-            case GLFW.GLFW_KEY_END -> {
-                hexCursorPosition = hexInputText.length();
-                updateHexSelectionAfterCursorMove();
-                return true;
-            }
-        }
-
-        return false;
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (dragging < 0) return false;
+        dragging = -1;
+        return true;
     }
 
-    @Override
-    public boolean charTyped(char chr, int modifiers) {
-        if (!hexInputActive) return false;
-
-        if (isHexChar(chr)) {
-            if (hasHexSelection()) {
-                deleteHexSelectedText();
-            }
-            if (hexInputText.length() < 8) {
-                hexInputText = hexInputText.substring(0, hexCursorPosition) + Character.toUpperCase(chr) + hexInputText.substring(hexCursorPosition);
-                hexCursorPosition++;
-            }
-            return true;
-        }
-
-        return false;
+    private void applyPalette(double mouseX, double mouseY, float paletteY) {
+        setting.setSaturation(Ease.clamp01((float) ((mouseX - x) / width)));
+        setting.setBrightness(1f - Ease.clamp01((float) ((mouseY - paletteY) / PALETTE)));
     }
 
-    private boolean isHexChar(char c) {
-        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
-    }
-
-    private void updatePalette(double mouseX, double mouseY) {
-        float pickerX = x;
-        float pickerY = y + height + SPACING;
-        float contentX = pickerX + SPACING;
-        float contentY = pickerY + SPACING;
-        float contentWidth = width - SPACING * 2;
-        float slidersWidth = SLIDER_WIDTH * 2 + SPACING;
-        float paletteWidth = contentWidth - slidersWidth - SPACING;
-        float paletteX = contentX + slidersWidth + SPACING;
-
-        float saturation = (float)((mouseX - paletteX) / paletteWidth);
-        float brightness = 1f - (float)((mouseY - contentY) / PALETTE_SIZE);
-
-        colorSetting.setSaturation(saturation);
-        colorSetting.setBrightness(brightness);
-    }
-
-    private void updateHue(double mouseY) {
-        float pickerY = y + height + SPACING;
-        float contentY = pickerY + SPACING;
-
-        float hue = (float)((mouseY - contentY) / PALETTE_SIZE);
-        colorSetting.setHue(hue);
-    }
-
-    private void updateAlpha(double mouseY) {
-        float pickerY = y + height + SPACING;
-        float contentY = pickerY + SPACING;
-
-        float alpha = (float)((mouseY - contentY) / PALETTE_SIZE);
-        colorSetting.setAlpha(alpha);
-    }
-
-    private String getHexString() {
-        int color = colorSetting.getColor();
-        int a = (color >> 24) & 0xFF;
-        int r = (color >> 16) & 0xFF;
-        int g = (color >> 8) & 0xFF;
-        int b = color & 0xFF;
-        return String.format("%02X%02X%02X%02X", r, g, b, a);
-    }
-
-    private void updateHexFromColor() {
-        hexInputText = getHexString();
-        hexCursorPosition = hexInputText.length();
-    }
-
-    private void applyHexInput() {
-        String hex = hexInputText.toUpperCase();
-
-        try {
-            int r, g, b, a = 255;
-
-            if (hex.length() == 6) {
-                r = Integer.parseInt(hex.substring(0, 2), 16);
-                g = Integer.parseInt(hex.substring(2, 4), 16);
-                b = Integer.parseInt(hex.substring(4, 6), 16);
-            } else if (hex.length() == 8) {
-                r = Integer.parseInt(hex.substring(0, 2), 16);
-                g = Integer.parseInt(hex.substring(2, 4), 16);
-                b = Integer.parseInt(hex.substring(4, 6), 16);
-                a = Integer.parseInt(hex.substring(6, 8), 16);
-            } else if (hex.length() == 3) {
-                r = Integer.parseInt(hex.substring(0, 1) + hex.substring(0, 1), 16);
-                g = Integer.parseInt(hex.substring(1, 2) + hex.substring(1, 2), 16);
-                b = Integer.parseInt(hex.substring(2, 3) + hex.substring(2, 3), 16);
-            } else {
-                updateHexFromColor();
-                return;
-            }
-
-            float[] hsb = Color.RGBtoHSB(r, g, b, null);
-            colorSetting.setHue(hsb[0]);
-            colorSetting.setSaturation(hsb[1]);
-            colorSetting.setBrightness(hsb[2]);
-            colorSetting.setAlpha(a / 255f);
-
-        } catch (NumberFormatException e) {
-            updateHexFromColor();
-        }
-    }
-
-    @Override
-    public void tick() {
-    }
-
-    @Override
-    public boolean isHover(double mouseX, double mouseY) {
-        return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
-    }
-
-    public float getTotalHeight() {
-        float totalExpandedHeight = PALETTE_SIZE + SPACING + 22 + SPACING * 2;
-        float expandedHeight = totalExpandedHeight * expandAnimation;
-        return height + expandedHeight;
-    }
-
-    public boolean isExpanded() {
-        return expanded;
-    }
-
-    public boolean isHexInputActive() {
-        return hexInputActive;
-    }
-
-    public boolean isDragging() {
-        return draggingPalette || draggingHue || draggingAlpha;
+    private boolean inside(double mouseX, double mouseY, float rx, float ry, float rw, float rh) {
+        return mouseX >= rx && mouseX <= rx + rw && mouseY >= ry && mouseY <= ry + rh;
     }
 }

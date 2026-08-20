@@ -1,387 +1,214 @@
 package rich.screens.account;
 
 import net.minecraft.util.Identifier;
-import net.minecraft.util.math.MathHelper;
-import rich.util.ColorUtil;
+import rich.screens.menu.anim.IOS;
+import rich.screens.menu.glass.Glass;
 import rich.util.render.Render2D;
 import rich.util.render.font.Fonts;
-import rich.util.render.shader.Scissor;
 
 import java.util.List;
 
+/**
+ * Accounts screen in the same iOS 26 glass language as the main menu.
+ *
+ * Left column: a nickname field with an add button, and the active account card with its head.
+ * Right column: the scrollable account list with per row hover springs and a delete badge.
+ *
+ * No scissor is used: rows outside the list are skipped and rows touching the edge fade out, which
+ * looks like the iOS list mask and costs nothing. Layout numbers live in static helpers so the
+ * screen can hit test without duplicating them, and hover springs are pooled instead of recreated,
+ * which keeps the frame allocation free.
+ */
 public class AccountRenderer {
 
-    private static final float BLUR_RADIUS = 15f;
-    private static final float OUTLINE_THICKNESS = 1f;
+    public static final float ROW_HEIGHT = 28f;
+    public static final float ROW_GAP = 4f;
+    private static final float LIST_TOP = 30f;
+
+    private static final int POOL = 64;
+    private final IOS.Spring[] rowHover = new IOS.Spring[POOL];
+    private final IOS.Spring fieldGlow = IOS.Spring.snappy(0f);
+    private final IOS.Spring addGlow = IOS.Spring.snappy(1f);
+
+    public AccountRenderer() {
+        for (int i = 0; i < POOL; i++) rowHover[i] = IOS.Spring.snappy(1f);
+    }
+
+    /* ------------------------------------------------------------------ layout */
+
+    public static boolean isOverField(float mouseX, float mouseY, float x, float y, float width, float height) {
+        return isMouseOver(mouseX, mouseY, x + 10f, y + 34f, width - 20f, 18f);
+    }
+
+    public static boolean isOverAddButton(float mouseX, float mouseY, float x, float y, float width, float height) {
+        return isMouseOver(mouseX, mouseY, x + 10f, y + 60f, width - 20f, 20f);
+    }
+
+    public static float contentHeight(int count) {
+        return count * (ROW_HEIGHT + ROW_GAP);
+    }
+
+    public static int entryIndexAt(float mouseX, float mouseY, float x, float y, float width, float height,
+                                   float scroll, int count) {
+        if (!isMouseOver(mouseX, mouseY, x, y + LIST_TOP, width, height - LIST_TOP - 6f)) return -1;
+        int index = (int) ((mouseY - (y + LIST_TOP) + scroll) / (ROW_HEIGHT + ROW_GAP));
+        if (index < 0 || index >= count) return -1;
+        return index;
+    }
+
+    public static boolean isOverEntryDelete(float mouseX, float mouseY, float x, float y, float width,
+                                            float scroll, int index) {
+        float rowY = y + LIST_TOP + index * (ROW_HEIGHT + ROW_GAP) - scroll;
+        return isMouseOver(mouseX, mouseY, x + width - 32f, rowY + 6f, 16f, 16f);
+    }
+
+    /* ------------------------------------------------------------------ panels */
 
     public void renderLeftPanelTop(float x, float y, float width, float height, float contentAlpha,
-                                   String nicknameText, boolean nicknameFieldFocused,
-                                   float scaledMouseX, float scaledMouseY, long currentTime) {
+                                   String nickname, boolean focused, float mouseX, float mouseY, long time) {
+        if (contentAlpha <= 0.01f) return;
+        float dt = IOS.delta();
 
-        int bgAlpha = (int) (contentAlpha * 120);
-        int headerAlpha = (int) (contentAlpha * 150);
-        int outlineAlpha = (int) (contentAlpha * 100);
-        int blurAlpha = (int) (contentAlpha * 80);
-        int titleAlpha = (int) (contentAlpha * 255);
-        int titleTextAlpha = (int) (contentAlpha * 155);
+        Glass.shadow(x, y, width, height, 20f, contentAlpha * 0.7f);
+        Glass.panel(x, y, width, height, 20f, contentAlpha);
+        Fonts.BOLD.draw("Новый аккаунт", x + 12f, y + 14f, 7f, Glass.label(contentAlpha));
 
-        int bgTopLeft = withAlpha(0x0d0f14, bgAlpha);
-        int bgTopRight = withAlpha(0x101218, bgAlpha);
-        int bgBottomLeft = withAlpha(0x08090c, bgAlpha);
-        int bgBottomRight = withAlpha(0x0d0f14, bgAlpha);
-        int headerTopLeft = withAlpha(0x14171f, headerAlpha);
-        int headerTopRight = withAlpha(0x181b24, headerAlpha);
-        int headerBottomLeft = withAlpha(0x10131a, headerAlpha);
-        int headerBottomRight = withAlpha(0x14171f, headerAlpha);
-        int outlineColor = withAlpha(0x252a36, outlineAlpha);
-        int blurTint = withAlpha(0x060810, blurAlpha);
+        float fieldX = x + 10f;
+        float fieldY = y + 34f;
+        float fieldW = width - 20f;
+        float glow = fieldGlow.update(focused ? 1f : 0f, dt);
 
-        int[] bgColors = {bgTopLeft, bgTopRight, bgBottomRight, bgBottomLeft};
-        Render2D.gradientRect(x, y, width, height, bgColors, 6);
-        int[] headerColors = {headerTopLeft, headerTopRight, headerBottomRight, headerBottomLeft};
-        Render2D.gradientRect(x, y, width, 22, headerColors, 6, 6, 0, 0);
-        Render2D.outline(x, y, width, height, OUTLINE_THICKNESS, outlineColor, 6);
-        Fonts.BOLD.drawCentered("Account Panel", x + width / 2f - 15, y + 7, 8f, withAlpha(0xFFFFFF, titleAlpha));
-
-        Fonts.REGULARNEW.draw("Nickname", x + 5, y + 28, 5.5f, withAlpha(0xFFFFFF, titleTextAlpha));
-
-        float fieldX = x + 5;
-        float fieldY = y + 38;
-        float fieldHeight = 14;
-        float addButtonSize = 14;
-        float buttonGap = 3;
-        float fieldWidth = width - 10 - addButtonSize - buttonGap;
-
-        renderNicknameField(fieldX, fieldY, fieldWidth, fieldHeight, contentAlpha, nicknameText, nicknameFieldFocused, currentTime);
-
-        float addButtonX = fieldX + fieldWidth + buttonGap;
-        boolean addButtonHovered = isMouseOver(scaledMouseX, scaledMouseY, addButtonX, fieldY, addButtonSize, addButtonSize);
-        renderAddButton(addButtonX, fieldY, addButtonSize, contentAlpha, addButtonHovered, titleAlpha);
-
-        float buttonWidth = width - 10;
-        float buttonHeight = 16;
-
-        float randomButtonX = x + 5;
-        float randomButtonY = fieldY + fieldHeight + 6;
-        boolean randomButtonHovered = isMouseOver(scaledMouseX, scaledMouseY, randomButtonX, randomButtonY, buttonWidth, buttonHeight);
-        renderRandomButton(randomButtonX, randomButtonY, buttonWidth, buttonHeight, contentAlpha, randomButtonHovered, titleAlpha);
-
-        float clearButtonX = x + 5;
-        float clearButtonY = randomButtonY + buttonHeight + 5;
-        boolean clearButtonHovered = isMouseOver(scaledMouseX, scaledMouseY, clearButtonX, clearButtonY, buttonWidth, buttonHeight);
-        renderClearAllButton(clearButtonX, clearButtonY, buttonWidth, buttonHeight, contentAlpha, clearButtonHovered, titleAlpha);
-    }
-
-    private void renderNicknameField(float x, float y, float width, float height, float contentAlpha,
-                                     String nicknameText, boolean focused, long currentTime) {
-        int titleAlpha = (int) (contentAlpha * 255);
-        int titleTextAlpha = (int) (contentAlpha * 155);
-        int fieldBgAlpha = (int) (contentAlpha * 180);
-        int fieldOutlineAlpha = focused ? (int) (contentAlpha * 180) : (int) (contentAlpha * 80);
-
-        int fieldBgTop = withAlpha(0x0a0c10, fieldBgAlpha);
-        int fieldBgBottom = withAlpha(0x080a0e, fieldBgAlpha);
-        int[] fieldBgColors = {fieldBgTop, fieldBgTop, fieldBgBottom, fieldBgBottom};
-
-        Render2D.gradientRect(x, y, width, height, fieldBgColors, 3);
-
-        int fieldOutlineColor = focused ? withAlpha(0x3a4a5a, fieldOutlineAlpha) : withAlpha(0x252a36, fieldOutlineAlpha);
-        Render2D.outline(x, y, width, height, 0.5f, fieldOutlineColor, 3);
-
-        String displayText = nicknameText.isEmpty() && !focused ? "Enter nick..." : nicknameText;
-        int textColor = nicknameText.isEmpty() && !focused ? withAlpha(0x606878, titleTextAlpha) : withAlpha(0xd0d4dc, titleAlpha);
-        Fonts.TEST.draw(displayText, x + 4, y + 4.5f, 5.5f, textColor);
-
-        if (focused && (currentTime / 500) % 2 == 0) {
-            float cursorX = x + 4 + Fonts.TEST.getWidth(nicknameText, 5.5f);
-            Render2D.rect(cursorX, y + 3, 0.5f, height - 6, withAlpha(0xd0d4dc, titleAlpha), 0);
+        Glass.panel(fieldX, fieldY, fieldW, 18f, 9f, contentAlpha * 0.92f);
+        if (glow > 0.01f) {
+            Glass.tint(fieldX, fieldY, fieldW, 18f, 9f, Glass.accent(1f), 0.22f * glow * contentAlpha);
         }
-    }
 
-    private void renderAddButton(float x, float y, float size, float contentAlpha, boolean hovered, int titleAlpha) {
-        int btnAlpha = hovered ? (int) (contentAlpha * 180) : (int) (contentAlpha * 140);
-        int btnTopLeft = withAlpha(0x14171f, btnAlpha);
-        int btnTopRight = withAlpha(0x181b24, btnAlpha);
-        int btnBottomLeft = withAlpha(0x10131a, btnAlpha);
-        int btnBottomRight = withAlpha(0x14171f, btnAlpha);
-        int[] btnColors = {btnTopLeft, btnTopRight, btnBottomRight, btnBottomLeft};
+        String shown = nickname == null ? "" : nickname;
+        if (shown.isEmpty()) {
+            Fonts.BOLD.draw("Никнейм", fieldX + 7f, fieldY + 6f, 6f, Glass.sub(contentAlpha));
+        } else {
+            Fonts.BOLD.draw(shown, fieldX + 7f, fieldY + 6f, 6f, Glass.label(contentAlpha));
+            if (focused && IOS.wave(1000f, 0f) > 0.5f) {
+                float caretX = fieldX + 7f + Fonts.BOLD.getWidth(shown, 6f) + 1f;
+                Render2D.rect(caretX, fieldY + 5f, 0.8f, 8f, Glass.label(contentAlpha), 0.4f);
+            }
+        }
 
-        Render2D.gradientRect(x, y, size, size, btnColors, 3);
-        Render2D.outline(x, y, size, size, 0.5f, withAlpha(0x252a36, (int) (contentAlpha * 100)), 3);
+        float buttonX = x + 10f;
+        float buttonY = y + 60f;
+        float buttonW = width - 20f;
+        boolean hovered = isMouseOver(mouseX, mouseY, buttonX, buttonY, buttonW, 20f);
+        float grow = addGlow.update(hovered ? 1.05f : 1f, dt);
+        float drawW = buttonW * grow;
+        float drawH = 20f * grow;
+        float drawX = buttonX + (buttonW - drawW) / 2f;
+        float drawY = buttonY + (20f - drawH) / 2f;
 
-        float plusCenterX = x + size / 2f;
-        float plusCenterY = y + size / 2f;
-        float plusSize = 5;
-        float plusThickness = 1.2f;
-
-        Render2D.rect(plusCenterX - plusSize / 2f, plusCenterY - plusThickness / 2f, plusSize, plusThickness, withAlpha(0xFFFFFF, titleAlpha), 0.5f);
-        Render2D.rect(plusCenterX - plusThickness / 2f, plusCenterY - plusSize / 2f, plusThickness, plusSize, withAlpha(0xFFFFFF, titleAlpha), 0.5f);
-    }
-
-    private void renderRandomButton(float x, float y, float width, float height, float contentAlpha, boolean hovered, int titleAlpha) {
-        int btnAlpha = hovered ? (int) (contentAlpha * 200) : (int) (contentAlpha * 140);
-        int btnTopLeft = hovered ? withAlpha(0x1a1f28, btnAlpha) : withAlpha(0x14171f, btnAlpha);
-        int btnTopRight = hovered ? withAlpha(0x1e232d, btnAlpha) : withAlpha(0x181b24, btnAlpha);
-        int btnBottomLeft = hovered ? withAlpha(0x14181f, btnAlpha) : withAlpha(0x10131a, btnAlpha);
-        int btnBottomRight = hovered ? withAlpha(0x1a1f28, btnAlpha) : withAlpha(0x14171f, btnAlpha);
-        int[] btnColors = {btnTopLeft, btnTopRight, btnBottomRight, btnBottomLeft};
-
-        Render2D.gradientRect(x, y, width, height, btnColors, 3);
-
-        int outlineColor = hovered ? withAlpha(0x3a4a5a, (int) (contentAlpha * 150)) : withAlpha(0x252a36, (int) (contentAlpha * 100));
-        Render2D.outline(x, y, width, height, 0.5f, outlineColor, 3);
-
-        int textColor = hovered ? withAlpha(0xFFFFFF, titleAlpha) : withAlpha(0xd0d8e4, titleAlpha);
-        Fonts.DEFAULT.draw("Random", x + 6, y + 5f, 5.5f, textColor);
-        Fonts.ICONS.draw("R", x + 75, y + 3.5f, 10f, textColor);
-    }
-
-    private void renderClearAllButton(float x, float y, float width, float height, float contentAlpha, boolean hovered, int titleAlpha) {
-        int btnAlpha = hovered ? (int) (contentAlpha * 200) : (int) (contentAlpha * 140);
-        int btnTopLeft = hovered ? withAlpha(0x2a1a1a, btnAlpha) : withAlpha(0x1a1416, btnAlpha);
-        int btnTopRight = hovered ? withAlpha(0x2e1e1e, btnAlpha) : withAlpha(0x1e1618, btnAlpha);
-        int btnBottomLeft = hovered ? withAlpha(0x241414, btnAlpha) : withAlpha(0x161012, btnAlpha);
-        int btnBottomRight = hovered ? withAlpha(0x2a1a1a, btnAlpha) : withAlpha(0x1a1416, btnAlpha);
-        int[] btnColors = {btnTopLeft, btnTopRight, btnBottomRight, btnBottomLeft};
-
-        Render2D.gradientRect(x, y, width, height, btnColors, 3);
-
-        int outlineColor = hovered ? withAlpha(0x5a3a3a, (int) (contentAlpha * 150)) : withAlpha(0x352a2a, (int) (contentAlpha * 100));
-        Render2D.outline(x, y, width, height, 0.5f, outlineColor, 3);
-
-        int textColor = hovered ? withAlpha(0xff8080, titleAlpha) : withAlpha(0xd0a0a0, titleAlpha);
-        Fonts.DEFAULT.draw("Clear All", x + 6, y + 5f, 5.5f, textColor);
-        Fonts.GUI_ICONS.draw("O", x + 77, y + 2.5f, 11f, textColor);
+        Glass.panel(drawX, drawY, drawW, drawH, 10f, contentAlpha);
+        Glass.tint(drawX, drawY, drawW, drawH, 10f, Glass.accent(1f), (hovered ? 0.34f : 0.24f) * contentAlpha);
+        Fonts.BOLD.drawCentered("Добавить", buttonX + buttonW / 2f, buttonY + 7f, 6.5f, Glass.label(contentAlpha));
     }
 
     public void renderLeftPanelBottom(float x, float y, float width, float height, float contentAlpha,
-                                      String activeAccountName, String activeAccountDate, Identifier activeAccountSkin) {
+                                      String name, String date, Identifier skin) {
+        if (contentAlpha <= 0.01f) return;
 
-        int bgAlpha = (int) (contentAlpha * 120);
-        int headerAlpha = (int) (contentAlpha * 150);
-        int outlineAlpha = (int) (contentAlpha * 100);
-        int blurAlpha = (int) (contentAlpha * 80);
-        int titleAlpha = (int) (contentAlpha * 255);
-        int titleTextAlpha = (int) (contentAlpha * 155);
+        Glass.shadow(x, y, width, height, 20f, contentAlpha * 0.7f);
+        Glass.panel(x, y, width, height, 20f, contentAlpha);
 
-        int bgTopLeft = withAlpha(0x0d0f14, bgAlpha);
-        int bgTopRight = withAlpha(0x101218, bgAlpha);
-        int bgBottomLeft = withAlpha(0x08090c, bgAlpha);
-        int bgBottomRight = withAlpha(0x0d0f14, bgAlpha);
-        int headerTopLeft = withAlpha(0x14171f, headerAlpha);
-        int headerTopRight = withAlpha(0x181b24, headerAlpha);
-        int headerBottomLeft = withAlpha(0x10131a, headerAlpha);
-        int headerBottomRight = withAlpha(0x14171f, headerAlpha);
-        int outlineColor = withAlpha(0x252a36, outlineAlpha);
-        int blurTint = withAlpha(0x060810, blurAlpha);
+        float face = 26f;
+        drawPlayerFace(skin, x + 12f, y + height / 2f - face / 2f, face, Glass.white(contentAlpha));
 
-        Render2D.blur(x, y, width, height, BLUR_RADIUS, 6, blurTint);
-        int[] bgColors = {bgTopLeft, bgTopRight, bgBottomRight, bgBottomLeft};
-        Render2D.gradientRect(x, y, width, height, bgColors, 6);
-        int[] headerColors = {headerTopLeft, headerTopRight, headerBottomRight, headerBottomLeft};
-        Render2D.gradientRect(x, y, width, 22, headerColors, 6, 6, 0, 0);
-        Render2D.outline(x, y, width, height, OUTLINE_THICKNESS, outlineColor, 6);
-        Fonts.BOLD.drawCentered("Active Session", x + width / 2f - 15, y + 6, 8f, withAlpha(0xFFFFFF, titleAlpha));
-
-        if (!activeAccountName.isEmpty()) {
-            float faceX = x + 8;
-            float faceY = y + 28;
-            float faceSize = 24;
-
-            Identifier skinTexture = SkinManager.getSkin(activeAccountName);
-            int faceColor = withAlpha(0xFFFFFF, titleAlpha);
-
-            drawPlayerFace(skinTexture, faceX, faceY, faceSize, faceColor);
-
-            float textX = faceX + faceSize + 6;
-            float nameY = faceY + 4;
-            float dateY = nameY + 10;
-
-            Fonts.TEST.draw(activeAccountName, textX, nameY, 6f, withAlpha(0xFFFFFF, titleAlpha));
-            Fonts.TEST.draw(activeAccountDate, textX, dateY, 4.5f, withAlpha(0x808890, titleAlpha));
-        } else {
-            Fonts.REGULARNEW.drawCentered("No account selected", x + 50, y + 36, 5f, withAlpha(0x606878, titleTextAlpha));
-        }
+        String shown = name == null || name.isEmpty() ? "Не выбран" : name;
+        Fonts.BOLD.draw(shown, x + 46f, y + height / 2f - 9f, 7f, Glass.label(contentAlpha));
+        Fonts.BOLD.draw(date == null || date.isEmpty() ? "Активный" : date, x + 46f, y + height / 2f + 3f,
+                5.5f, Glass.sub(contentAlpha));
     }
 
     public void renderRightPanel(float x, float y, float width, float height, float contentAlpha,
-                                 List<AccountEntry> accounts, float scrollOffset,
-                                 float scaledMouseX, float scaledMouseY, float scale, int guiScale) {
+                                 List<AccountEntry> accounts, float scroll, float mouseX, float mouseY,
+                                 int guiScale) {
+        if (contentAlpha <= 0.01f) return;
+        float dt = IOS.delta();
 
-        int bgAlpha = (int) (contentAlpha * 120);
-        int headerAlpha = (int) (contentAlpha * 150);
-        int outlineAlpha = (int) (contentAlpha * 100);
-        int blurAlpha = (int) (contentAlpha * 80);
-        int titleAlpha = (int) (contentAlpha * 255);
-        int titleTextAlpha = (int) (contentAlpha * 155);
+        Glass.shadow(x, y, width, height, 22f, contentAlpha * 0.7f);
+        Glass.panel(x, y, width, height, 22f, contentAlpha);
 
-        int bgTopLeft = withAlpha(0x0d0f14, bgAlpha);
-        int bgTopRight = withAlpha(0x101218, bgAlpha);
-        int bgBottomLeft = withAlpha(0x08090c, bgAlpha);
-        int bgBottomRight = withAlpha(0x0d0f14, bgAlpha);
-        int headerTopLeft = withAlpha(0x14171f, headerAlpha);
-        int headerTopRight = withAlpha(0x181b24, headerAlpha);
-        int headerBottomLeft = withAlpha(0x10131a, headerAlpha);
-        int headerBottomRight = withAlpha(0x14171f, headerAlpha);
-        int outlineColor = withAlpha(0x252a36, outlineAlpha);
-        int blurTint = withAlpha(0x060810, blurAlpha);
-
-        Render2D.blur(x, y, width, height, BLUR_RADIUS, 6, blurTint);
-        int[] bgColors = {bgTopLeft, bgTopRight, bgBottomRight, bgBottomLeft};
-        Render2D.gradientRect(x, y, width, height, bgColors, 6);
-        int[] headerColors = {headerTopLeft, headerTopRight, headerBottomRight, headerBottomLeft};
-        Render2D.gradientRect(x, y, width, 22, headerColors, 6, 6, 0, 0);
-        Render2D.outline(x, y, width, height, OUTLINE_THICKNESS, outlineColor, 6);
-        Fonts.BOLD.draw("Accounts List", x + 8, y + 7, 8f, withAlpha(0xFFFFFF, titleAlpha));
-        Render2D.blur(x, y, width, height, 0f, 0, ColorUtil.rgba(0, 0, 0, 1));
-
-        float accountListX = x + 5;
-        float accountListY = y + 28;
-        float accountListWidth = width - 10;
-        float accountListHeight = height - 31;
-
-        float cardWidth = (accountListWidth - 5) / 2f;
-        float cardHeight = 40;
-        float cardGap = 5;
-
-        float scissorScale = guiScale / scale;
-        Scissor.enable(accountListX * scale, accountListY * scale, accountListWidth * scale, accountListHeight * scale, scissorScale);
-
-        for (int i = 0; i < accounts.size(); i++) {
-            AccountEntry account = accounts.get(i);
-
-            int col = i % 2;
-            int row = i / 2;
-
-            float cardX = accountListX + col * (cardWidth + cardGap);
-            float cardY = accountListY + row * (cardHeight + cardGap) - scrollOffset;
-
-            if (cardY + cardHeight < accountListY - 10 || cardY > accountListY + accountListHeight + 10) {
-                continue;
-            }
-
-            renderAccountCard(cardX, cardY, cardWidth, cardHeight, account, contentAlpha,
-                    scaledMouseX, scaledMouseY, accountListY, accountListHeight);
-        }
-
-        Scissor.disable();
+        Fonts.BOLD.draw("Аккаунты", x + 14f, y + 13f, 8f, Glass.label(contentAlpha));
+        String counter = Integer.toString(accounts.size());
+        Fonts.BOLD.draw(counter, x + width - 14f - Fonts.BOLD.getWidth(counter, 7f), y + 14f, 7f,
+                Glass.sub(contentAlpha));
+        Glass.separator(x + 12f, y + LIST_TOP - 6f, width - 24f, contentAlpha);
 
         if (accounts.isEmpty()) {
-            Fonts.REGULARNEW.drawCentered("No accounts added", x + width / 2f, y + height / 2f + 2, 6f, withAlpha(0x606878, titleTextAlpha));
+            Fonts.BOLD.drawCentered("Список пуст", x + width / 2f, y + height / 2f - 4f, 7f,
+                    Glass.sub(contentAlpha));
+            return;
         }
-    }
 
-    private void renderAccountCard(float x, float y, float width, float height, AccountEntry account,
-                                   float contentAlpha, float mouseX, float mouseY,
-                                   float listY, float listHeight) {
+        float listY = y + LIST_TOP;
+        float listHeight = height - LIST_TOP - 6f;
 
-        int titleAlpha = (int) (contentAlpha * 255);
+        for (int i = 0; i < accounts.size(); i++) {
+            float rowY = listY + i * (ROW_HEIGHT + ROW_GAP) - scroll;
+            if (rowY + ROW_HEIGHT < listY || rowY > listY + listHeight) continue;
 
-        boolean cardHovered = isMouseOver(mouseX, mouseY, x, y, width, height)
-                && mouseY >= listY && mouseY <= listY + listHeight;
+            // iOS style edge mask: rows leaving the list fade instead of being cut in half.
+            float visible = Math.min(rowY + ROW_HEIGHT - listY, listY + listHeight - rowY) / ROW_HEIGHT;
+            float rowAlpha = contentAlpha * IOS.clamp01(visible);
+            if (rowAlpha <= 0.02f) continue;
 
-        int cardAlpha = cardHovered ? (int) (contentAlpha * 160) : (int) (contentAlpha * 120);
-        int cardTopLeft = withAlpha(0x12151c, cardAlpha);
-        int cardTopRight = withAlpha(0x161a22, cardAlpha);
-        int cardBottomLeft = withAlpha(0x0e1016, cardAlpha);
-        int cardBottomRight = withAlpha(0x12151c, cardAlpha);
-        int[] cardColors = {cardTopLeft, cardTopRight, cardBottomRight, cardBottomLeft};
+            AccountEntry entry = accounts.get(i);
+            boolean hovered = isMouseOver(mouseX, mouseY, x + 12f, rowY, width - 24f, ROW_HEIGHT)
+                    && isMouseOver(mouseX, mouseY, x, listY, width, listHeight);
 
-        Render2D.gradientRect(x, y, width, height, cardColors, 4);
-        Render2D.blur(x, y, 1, 1, 0f, 0, ColorUtil.rgba(0, 0, 0, 0));
+            float grow = rowHover[i % POOL].update(hovered ? 1.02f : 1f, dt);
+            float rowWidth = (width - 24f) * grow;
+            float rowHeight = ROW_HEIGHT * grow;
+            float rowX = x + 12f + ((width - 24f) - rowWidth) / 2f;
+            float drawY = rowY + (ROW_HEIGHT - rowHeight) / 2f;
 
-        int cardOutlineColor = withAlpha(0x252a36, (int) (contentAlpha * 80));
-        Render2D.outline(x, y, width, height, 0.5f, cardOutlineColor, 4);
-
-        float faceX = x + 7;
-        float faceY = y + 7;
-        float faceSize = 25;
-
-        Identifier skinTexture = SkinManager.getSkin(account.getName());
-        drawPlayerFace(skinTexture, faceX, faceY, faceSize, withAlpha(0xFFFFFF, titleAlpha));
-
-        float textX = faceX + faceSize + 5;
-        float nameY = faceY + 2;
-        float dateY = nameY + 9;
-
-        String displayName = account.getName();
-        float maxNameWidth = width - faceSize - 45;
-        if (Fonts.TEST.getWidth(displayName, 7f) > maxNameWidth) {
-            while (Fonts.TEST.getWidth(displayName + "...", 7f) > maxNameWidth && displayName.length() > 3) {
-                displayName = displayName.substring(0, displayName.length() - 1);
+            Glass.panel(rowX, drawY, rowWidth, rowHeight, 12f, rowAlpha * (hovered ? 1f : 0.85f));
+            if (entry.isPinned()) {
+                Glass.tint(rowX, drawY, rowWidth, rowHeight, 12f, Glass.accent(1f), 0.16f * rowAlpha);
             }
-            displayName += "...";
+
+            drawPlayerFace(SkinManager.getSkin(entry.getName()), rowX + 6f, drawY + rowHeight / 2f - 8f, 16f,
+                    Glass.white(rowAlpha));
+            Fonts.BOLD.draw(entry.getName(), rowX + 28f, drawY + rowHeight / 2f - 7f, 6.5f, Glass.label(rowAlpha));
+            Fonts.BOLD.draw(entry.getDate(), rowX + 28f, drawY + rowHeight / 2f + 2f, 5f, Glass.sub(rowAlpha));
+
+            boolean overDelete = isMouseOver(mouseX, mouseY, x + width - 32f, rowY + 6f, 16f, 16f);
+            Glass.circle(x + width - 24f, rowY + 14f, 16f, rowAlpha * (overDelete ? 1f : 0.7f));
+            Render2D.rect(x + width - 28f, rowY + 13.2f, 8f, 1.6f, Glass.destructive(rowAlpha), 0.8f);
         }
 
-        Fonts.TEST.draw(displayName, textX, nameY, 7f, withAlpha(0xFFFFFF, titleAlpha));
-        Fonts.TEST.draw(account.getDate(), textX, dateY, 6f, withAlpha(0x707888, titleAlpha));
-
-        float buttonSize = 12;
-        float buttonYPos = y + height - buttonSize - 5;
-        float pinButtonX = x + width - buttonSize * 2 - 8;
-        float deleteButtonX = x + width - buttonSize - 5;
-
-        boolean pinHovered = isMouseOver(mouseX, mouseY, pinButtonX, buttonYPos, buttonSize, buttonSize)
-                && mouseY >= listY && mouseY <= listY + listHeight;
-        boolean deleteHovered = isMouseOver(mouseX, mouseY, deleteButtonX, buttonYPos, buttonSize, buttonSize)
-                && mouseY >= listY && mouseY <= listY + listHeight;
-
-        int pinBtnAlpha = pinHovered ? (int) (contentAlpha * 220) : (int) (contentAlpha * 160);
-        int pinBtnColor;
-        int pinOutlineColor;
-
-        if (account.isPinned()) {
-            pinBtnColor = withAlpha(0x4a3a10, pinBtnAlpha);
-            pinOutlineColor = withAlpha(0xd4a017, (int) (contentAlpha * 180));
-        } else {
-            pinBtnColor = withAlpha(0x1a1d24, pinBtnAlpha);
-            pinOutlineColor = withAlpha(0x353a46, (int) (contentAlpha * 100));
+        float total = contentHeight(accounts.size());
+        if (total > listHeight) {
+            float trackHeight = listHeight - 8f;
+            float thumbHeight = Math.max(14f, trackHeight * (listHeight / total));
+            float maxScroll = total - listHeight;
+            float offset = maxScroll <= 0f ? 0f : IOS.clamp01(scroll / maxScroll) * (trackHeight - thumbHeight);
+            Render2D.rect(x + width - 6f, listY + 4f, 2.4f, trackHeight,
+                    Glass.rgba(255, 255, 255, 0.12f * contentAlpha), 1.2f);
+            Render2D.rect(x + width - 6f, listY + 4f + offset, 2.4f, thumbHeight,
+                    Glass.white(contentAlpha * 0.75f), 1.2f);
         }
-
-        int[] pinBtnColors = {pinBtnColor, pinBtnColor, pinBtnColor, pinBtnColor};
-        Render2D.gradientRect(pinButtonX, buttonYPos, buttonSize, buttonSize, pinBtnColors, 3);
-        Render2D.outline(pinButtonX, buttonYPos, buttonSize, buttonSize, 0.5f, pinOutlineColor, 3);
-        Render2D.blur(x, y, 1, 1, 0f, 0, ColorUtil.rgba(0, 0, 0, 0));
-
-        int pinIconColor = account.isPinned() ? withAlpha(0xffd700, titleAlpha) : withAlpha(0xc0c8d4, titleAlpha);
-        Fonts.MAINMENUSCREEN.drawCentered("c", pinButtonX + buttonSize / 2f, buttonYPos + 1.5f, 9f, pinIconColor);
-
-        int delBtnAlpha = deleteHovered ? (int) (contentAlpha * 200) : (int) (contentAlpha * 140);
-        int delBtnColor = deleteHovered ? withAlpha(0x5a2a2a, delBtnAlpha) : withAlpha(0x1a1d24, delBtnAlpha);
-        int[] delBtnColors = {delBtnColor, delBtnColor, delBtnColor, delBtnColor};
-        Render2D.gradientRect(deleteButtonX, buttonYPos, buttonSize, buttonSize, delBtnColors, 3);
-        Render2D.outline(deleteButtonX, buttonYPos, buttonSize, buttonSize, 0.5f, withAlpha(0x353a46, (int) (contentAlpha * 100)), 3);
-        Render2D.blur(x, y, 1, 1, 0f, 0, ColorUtil.rgba(0, 0, 0, 0));
-
-        int delIconColor = deleteHovered ? withAlpha(0xff8080, titleAlpha) : withAlpha(0xc0c8d4, titleAlpha);
-        Fonts.GUI_ICONS.drawCentered("O", deleteButtonX + buttonSize / 2f, buttonYPos + 0.5f, 11f, delIconColor);
     }
+
+    /* ------------------------------------------------------------------ helpers */
 
     public void drawPlayerFace(Identifier skin, float x, float y, float size, int color) {
-        float u0 = 8f / 64f;
-        float v0 = 8f / 64f;
-        float u1 = 16f / 64f;
-        float v1 = 16f / 64f;
-
-        Render2D.texture(skin, x, y, size, size, u0, v0, u1, v1, color, 0, 3f);
-
-        float hatScale = 1.12f;
-        float hatSize = size * hatScale;
-        float hatOffset = (hatSize - size) / 2f;
-
-        float hatU0 = 40f / 64f;
-        float hatV0 = 8f / 64f;
-        float hatU1 = 48f / 64f;
-        float hatV1 = 16f / 64f;
-
-        Render2D.texture(skin, x - hatOffset, y - hatOffset, hatSize, hatSize, hatU0, hatV0, hatU1, hatV1, color, 0f, 3f);
+        if (skin == null) return;
+        Render2D.texture(skin, x, y, size, size, 1f, size * 0.28f, color);
     }
 
-    public boolean isMouseOver(float mouseX, float mouseY, float x, float y, float width, float height) {
+    public static boolean isMouseOver(float mouseX, float mouseY, float x, float y, float width, float height) {
         return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
     }
 
-    public int withAlpha(int color, int alpha) {
-        return (color & 0x00FFFFFF) | (MathHelper.clamp(alpha, 0, 255) << 24);
+    public static int withAlpha(int color, int alpha) {
+        int clamped = Math.max(0, Math.min(255, alpha));
+        return (color & 0x00FFFFFF) | (clamped << 24);
     }
 }

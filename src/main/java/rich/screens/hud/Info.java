@@ -3,174 +3,148 @@ package rich.screens.hud;
 import net.minecraft.client.gui.DrawContext;
 import rich.client.draggables.AbstractHudElement;
 import rich.modules.impl.render.Hud;
-import rich.util.render.Render2D;
+import rich.screens.hud.theme.HudAnim;
+import rich.screens.hud.theme.HudTheme;
 import rich.util.render.font.Fonts;
+import rich.util.render.shader.Scissor;
 
-import java.awt.*;
+import java.util.Locale;
 
+/**
+ * Glass pill with coordinates and speed.
+ * Coordinate digits nudge vertically when they change, the BPS value gets a spring bar.
+ */
 public class Info extends AbstractHudElement {
 
-    private double lastX = 0;
-    private double lastZ = 0;
-    private double currentBps = 0;
-    private double displayBps = 0;
-    private double targetBps = 0;
-    private long lastUpdateTime = 0;
+    private final HudAnim.Clock clock = new HudAnim.Clock();
+    private final HudAnim.Spring widthSpring = new HudAnim.Spring(0f, 165f, 19f);
+    private final HudAnim.Spring bpsSpring = new HudAnim.Spring(0f, 120f, 16f);
+    private final HudAnim.Spring nudgeX = new HudAnim.Spring(0f, 260f, 14f);
+    private final HudAnim.Spring nudgeY = new HudAnim.Spring(0f, 260f, 14f);
+    private final HudAnim.Spring nudgeZ = new HudAnim.Spring(0f, 260f, 14f);
 
-    private static final double BPS_SMOOTHING = 0.05;
-    private static final double DISPLAY_SMOOTHING = 0.03;
+    private int lastX;
+    private int lastY;
+    private int lastZ;
+
+    private double lastPosX;
+    private double lastPosZ;
+    private long lastUpdate;
+    private double bps;
 
     public Info() {
-        super("Info", 10, 0, 200, 24, false);
+        super("Info", 10, 32, 120, 18, true);
         startAnimation();
+    }
+
+    @Override
+    public float getRoundingRadius() {
+        return HudTheme.RADIUS * HudTheme.scale();
     }
 
     @Override
     public void tick() {
     }
 
-    private double roundToStep(double value, double step) {
-        return Math.round(value / step) * step;
+    private float nudge(HudAnim.Spring spring, int current, int previous, float dt) {
+        if (current != previous) spring.set(current > previous ? 1f : -1f);
+        return spring.update(0f, dt);
     }
 
     @Override
     public void drawDraggable(DrawContext context, int alpha) {
-        if (alpha <= 0) return;
         if (mc.player == null) return;
+        float a = HudAnim.clamp01(alpha / 255f);
+        if (a <= 0.01f) return;
 
-        boolean showBps = Hud.getInstance() != null && Hud.getInstance().showBps.isValue();
+        float dt = clock.delta();
+        Hud hud = Hud.getInstance();
+        boolean showBps = hud == null || hud.showBps.isValue();
 
-        long currentTime = System.currentTimeMillis();
-        double deltaTime = (currentTime - lastUpdateTime) / 1000.0;
-
-        if (lastUpdateTime > 0 && deltaTime > 0) {
-            double dx = mc.player.getX() - lastX;
-            double dz = mc.player.getZ() - lastZ;
-            double distance = Math.sqrt(dx * dx + dz * dz);
-            double instantBps = distance / deltaTime;
-
-            currentBps = currentBps + (instantBps - currentBps) * BPS_SMOOTHING;
-            targetBps = roundToStep(currentBps, 0.50);
+        long now = System.currentTimeMillis();
+        double delta = (now - lastUpdate) / 1000.0;
+        if (lastUpdate > 0 && delta > 0.01) {
+            double dx = mc.player.getX() - lastPosX;
+            double dz = mc.player.getZ() - lastPosZ;
+            double instant = Math.sqrt(dx * dx + dz * dz) / delta;
+            bps += (instant - bps) * 0.25;
         }
+        lastPosX = mc.player.getX();
+        lastPosZ = mc.player.getZ();
+        lastUpdate = now;
 
-        displayBps = displayBps + (targetBps - displayBps) * DISPLAY_SMOOTHING;
+        int px = (int) mc.player.getX();
+        int py = (int) mc.player.getY();
+        int pz = (int) mc.player.getZ();
 
-        lastX = mc.player.getX();
-        lastZ = mc.player.getZ();
-        lastUpdateTime = currentTime;
+        float offsetX = nudge(nudgeX, px, lastX, dt);
+        float offsetY = nudge(nudgeY, py, lastY, dt);
+        float offsetZ = nudge(nudgeZ, pz, lastZ, dt);
+        lastX = px;
+        lastY = py;
+        lastZ = pz;
 
-        float x = -5;
-        float y = 28;
+        float sc = HudTheme.scale();
+        float font = 6f * sc;
+        float pad = 7f * sc;
+        float height = 17f * sc;
+        float radius = height / 2f;
+        float gap = 6f * sc;
 
-        int playerX = (int) mc.player.getX();
-        int playerY = (int) mc.player.getY();
-        int playerZ = (int) mc.player.getZ();
+        String xValue = String.valueOf(px);
+        String yValue = String.valueOf(py);
+        String zValue = String.valueOf(pz);
+        String bpsValue = String.format(Locale.US, "%.2f b/s", bps);
 
-        String xText = "x";
-        String yText = "y";
-        String zText = "z";
+        float content = pad
+                + Fonts.ICONSTYPETHO.getWidth("n", font * 1.3f) + 4f * sc
+                + Fonts.BOLD.getWidth("x " + xValue, font) + gap
+                + Fonts.BOLD.getWidth("y " + yValue, font) + gap
+                + Fonts.BOLD.getWidth("z " + zValue, font)
+                + (showBps ? gap + Fonts.BOLD.getWidth(bpsValue, font) + 14f * sc : 0f)
+                + pad;
 
-        String xValue = String.valueOf(playerX);
-        String yValue = String.valueOf(playerY);
-        String zValue = String.valueOf(playerZ);
+        if (widthSpring.get() <= 0.5f) widthSpring.set(content);
+        float width = widthSpring.update(content, dt);
 
-        double roundedDisplayBps = roundToStep(displayBps, 0.50);
-        String bpsValue = String.format("%.2f", roundedDisplayBps);
-        String bpsText = "b/s";
+        setWidth((int) Math.ceil(width));
+        setHeight((int) Math.ceil(height));
 
-        float xTextWidth = Fonts.BOLD.getWidth(xText, 6);
-        float yTextWidth = Fonts.BOLD.getWidth(yText, 6);
-        float zTextWidth = Fonts.BOLD.getWidth(zText, 6);
+        float x = getX();
+        float y = getY();
 
-        float xValueWidth = Fonts.BOLD.getWidth(xValue, 6);
-        float yValueWidth = Fonts.BOLD.getWidth(yValue, 6);
-        float zValueWidth = Fonts.BOLD.getWidth(zValue, 6);
+        HudTheme.panel(x, y, width, height, radius, a);
+        Scissor.enable(x, y, width, height, 2f);
 
-        float bpsValueWidth = Fonts.BOLD.getWidth(bpsValue, 6);
-        float bpsTextWidth = Fonts.BOLD.getWidth(bpsText, 6);
+        float textY = y + height / 2f - font * 0.78f;
+        float cursor = x + pad;
 
-        float coordsWidth = 10 + 12 + xTextWidth + 2 + xValueWidth + 8 + 8 +
-                yTextWidth + 2 + yValueWidth + 8 + 8 +
-                zTextWidth + 2 + zValueWidth;
+        Fonts.ICONSTYPETHO.draw("n", cursor, y + height / 2f - font * 0.85f, font * 1.3f, HudTheme.accent(a, 0.3f));
+        cursor += Fonts.ICONSTYPETHO.getWidth("n", font * 1.3f) + 4f * sc;
 
-        float bpsWidth = 10 + 12 + 12 + bpsValueWidth + 2 + bpsTextWidth + 5;
-
-        setX((int) x);
-        setY((int) y);
+        cursor = drawAxis("x", xValue, cursor, textY, font, sc, a, offsetX) + gap;
+        cursor = drawAxis("y", yValue, cursor, textY, font, sc, a, offsetY) + gap;
+        cursor = drawAxis("z", zValue, cursor, textY, font, sc, a, offsetZ);
 
         if (showBps) {
-            setWidth((int) (coordsWidth + bpsWidth + 30));
-        } else {
-            setWidth((int) (coordsWidth + 24));
+            cursor += gap;
+            Fonts.BOLD.draw(bpsValue, cursor, textY, font, HudTheme.dimBright(a));
+
+            float barWidth = 12f * sc;
+            float barX = cursor + Fonts.BOLD.getWidth(bpsValue, font) + 2f * sc;
+            float target = HudAnim.clamp01((float) (bps / 8.0));
+            HudTheme.progress(barX, y + height / 2f - 1f * sc, barWidth, 2f * sc,
+                    bpsSpring.update(target, dt), a);
         }
-        setHeight(22);
 
-        Render2D.gradientRect(x + 12, y + 3, coordsWidth, 20,
-                new int[]{
-                        new Color(52, 52, 52, 255).getRGB(),
-                        new Color(22, 22, 22, 255).getRGB(),
-                        new Color(52, 52, 52, 255).getRGB(),
-                        new Color(22, 22, 22, 255).getRGB()
-                },
-                5);
+        Scissor.disable();
+    }
 
-        Render2D.outline(x + 12, y + 3, coordsWidth, 20, 0.35f, new Color(90, 90, 90, 255).getRGB(), 5);
-
-        float textY = y + 7;
-        float textX = x + 12;
-
-        Fonts.ICONSTYPETHO.draw("n", textX + 5, textY + 0.5f, 11, new Color(255, 255, 255, 255).getRGB());
-
-        float offsetX = textX + 22;
-
-        Fonts.BOLD.draw(xText, offsetX, textY + 3, 6, new Color(155, 155, 155, 255).getRGB());
-        offsetX += xTextWidth + 2;
-
-        Fonts.BOLD.draw(xValue, offsetX, textY + 3, 6, new Color(255, 255, 255, 255).getRGB());
-        offsetX += xValueWidth;
-
-        Fonts.TEST.draw("»", offsetX + 4, textY + 1.5f, 8, new Color(155, 155, 155, 255).getRGB());
-        offsetX += 12;
-
-        Fonts.BOLD.draw(yText, offsetX, textY + 3, 6, new Color(155, 155, 155, 255).getRGB());
-        offsetX += yTextWidth + 2;
-
-        Fonts.BOLD.draw(yValue, offsetX, textY + 3, 6, new Color(255, 255, 255, 255).getRGB());
-        offsetX += yValueWidth;
-
-        Fonts.TEST.draw("»", offsetX + 4, textY + 1.5f, 8, new Color(155, 155, 155, 255).getRGB());
-        offsetX += 12;
-
-        Fonts.BOLD.draw(zText, offsetX, textY + 3, 6, new Color(155, 155, 155, 255).getRGB());
-        offsetX += zTextWidth + 2;
-
-        Fonts.BOLD.draw(zValue, offsetX, textY + 3, 6, new Color(255, 255, 255, 255).getRGB());
-
-        if (showBps) {
-            float bpsBoxX = x + 12 + coordsWidth + 4;
-
-            Render2D.gradientRect(bpsBoxX, y + 3, bpsWidth, 20,
-                    new int[]{
-                            new Color(52, 52, 52, 255).getRGB(),
-                            new Color(22, 22, 22, 255).getRGB(),
-                            new Color(52, 52, 52, 255).getRGB(),
-                            new Color(22, 22, 22, 255).getRGB()
-                    },
-                    5);
-
-            Render2D.outline(bpsBoxX, y + 3, bpsWidth, 20, 0.35f, new Color(90, 90, 90, 255).getRGB(), 5);
-
-            Fonts.ICONSTYPETHO.draw("l", bpsBoxX + 5, textY + 0.5f, 11, new Color(255, 255, 255, 255).getRGB());
-
-            float bpsOffsetX = bpsBoxX + 20;
-
-            Fonts.TEST.draw("»", bpsOffsetX, textY + 1.5f, 8, new Color(155, 155, 155, 255).getRGB());
-            bpsOffsetX += 10;
-
-            Fonts.BOLD.draw(bpsValue, bpsOffsetX, textY + 3, 6, new Color(255, 255, 255, 255).getRGB());
-            bpsOffsetX += bpsValueWidth + 2;
-
-            Fonts.BOLD.draw(bpsText, bpsOffsetX, textY + 3, 6, new Color(155, 155, 155, 255).getRGB());
-        }
+    private float drawAxis(String axis, String value, float x, float y, float font, float sc, float alpha,
+                           float offset) {
+        Fonts.BOLD.draw(axis, x, y, font, HudTheme.dim(alpha));
+        float axisWidth = Fonts.BOLD.getWidth(axis + " ", font);
+        Fonts.BOLD.draw(value, x + axisWidth, y + offset * 2.2f * sc, font, HudTheme.text(alpha));
+        return x + axisWidth + Fonts.BOLD.getWidth(value, font);
     }
 }

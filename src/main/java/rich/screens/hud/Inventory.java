@@ -3,25 +3,27 @@ package rich.screens.hud;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.item.ItemStack;
 import rich.client.draggables.AbstractHudElement;
+import rich.screens.hud.theme.HudAnim;
+import rich.screens.hud.theme.HudTheme;
 import rich.util.animations.Direction;
-import rich.util.render.Render2D;
+import rich.util.render.font.Fonts;
 import rich.util.render.item.ItemRender;
+import rich.util.render.shader.Scissor;
 
-import java.awt.*;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
+/** Player inventory preview as a frosted glass grid, every slot fades in on its own. */
 public class Inventory extends AbstractHudElement {
 
-    private static final int SLOT_SIZE = 12;
-    private static final int SLOTS_PER_ROW = 9;
-    private static final int INVENTORY_ROWS = 3;
-    private static final float ITEM_SCALE = 0.5f;
+    private static final int ROWS = 3;
+    private static final int COLUMNS = 9;
 
-    private int filledSlots = 0;
+    private final HudAnim.Clock clock = new HudAnim.Clock();
+    private final Map<Integer, Float> slotFade = new HashMap<>();
 
     public Inventory() {
-        super("Inventory", 20, 60, 200, 80, true);
+        super("Inventory", 300, 220, 120, 46, true);
         stopAnimation();
     }
 
@@ -31,115 +33,85 @@ public class Inventory extends AbstractHudElement {
     }
 
     @Override
+    public float getRoundingRadius() {
+        return HudTheme.RADIUS * HudTheme.scale();
+    }
+
+    @Override
     public void tick() {
         if (mc.player == null) {
-            filledSlots = 0;
             stopAnimation();
             return;
         }
-
-        filledSlots = 0;
-        for (int i = 9; i < 36; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (!stack.isEmpty()) {
-                filledSlots++;
-            }
-        }
-
-        boolean hasItems = filledSlots > 0;
-        boolean inChat = isChat(mc.currentScreen);
-
-        if (hasItems || inChat) {
-            startAnimation();
-        } else {
-            stopAnimation();
-        }
+        startAnimation();
     }
 
     @Override
     public void drawDraggable(DrawContext context, int alpha) {
-        if (alpha <= 0) return;
         if (mc.player == null) return;
+        float a = HudAnim.clamp01(alpha / 255f);
+        if (a <= 0.01f) return;
 
-        float alphaFactor = alpha / 255.0f;
+        float dt = clock.delta();
+        float sc = HudTheme.scale();
+        float pad = 6f * sc;
+        float slot = 12.5f * sc;
+        float gap = 1.6f * sc;
+        float header = 15f * sc;
+        float font = 6f * sc;
+        float radius = HudTheme.RADIUS * sc;
+
+        float width = pad * 2f + COLUMNS * slot + (COLUMNS - 1) * gap;
+        float height = header + pad + ROWS * slot + (ROWS - 1) * gap;
+
+        setWidth((int) Math.ceil(width));
+        setHeight((int) Math.ceil(height));
 
         float x = getX();
         float y = getY();
 
-        float padding = 6;
-        float slotGap = 1;
+        HudTheme.panel(x, y, width, height, radius, a);
+        Scissor.enable(x, y, width, height, 2f);
 
-        float slotsWidth = SLOTS_PER_ROW * SLOT_SIZE + (SLOTS_PER_ROW - 1) * slotGap;
-        float slotsHeight = INVENTORY_ROWS * SLOT_SIZE + (INVENTORY_ROWS - 1) * slotGap;
+        HudTheme.accentBar(x + pad * 0.4f, y + 4f * sc, 1.6f * sc, header - 6f * sc, a, 1.1f);
+        Fonts.BOLD.draw("Inventory", x + pad + 2f * sc, y + header / 2f - font * 0.78f, font, HudTheme.text(a));
+        HudTheme.divider(x + pad, y + header - 1.4f * sc, width - pad * 2f, a * 0.7f);
 
-        float contentWidth = slotsWidth + padding * 2;
-        float contentHeight = slotsHeight + padding * 2;
+        for (int row = 0; row < ROWS; row++) {
+            for (int column = 0; column < COLUMNS; column++) {
+                int index = 9 + row * COLUMNS + column;
+                ItemStack stack = mc.player.getInventory().getStack(index);
 
-        setWidth((int) contentWidth);
-        setHeight((int) (contentHeight + 4));
+                float slotX = x + pad + column * (slot + gap);
+                float slotY = y + header + row * (slot + gap);
 
-        float contentY = y;
+                float target = stack.isEmpty() ? 0f : 1f;
+                float fade = HudAnim.smooth(slotFade.getOrDefault(index, 0f), target, dt, 6f + column * 0.25f);
+                slotFade.put(index, fade);
 
-        int bgAlpha = (int) (255 * alphaFactor);
+                HudTheme.chip(slotX, slotY, slot, slot, 2.6f * sc, a * (0.45f + 0.55f * fade));
 
-        Render2D.gradientRect(x + 2, contentY + 2, contentWidth - 4, contentHeight - 4,
-                new int[]{
-                        new Color(52, 52, 52, bgAlpha).getRGB(),
-                        new Color(32, 32, 32, bgAlpha).getRGB(),
-                        new Color(52, 52, 52, bgAlpha).getRGB(),
-                        new Color(32, 32, 32, bgAlpha).getRGB()
-                },
-                5);
+                if (fade <= 0.02f || stack.isEmpty()) continue;
 
-        Render2D.outline(x + 2, contentY + 2, contentWidth - 4, contentHeight - 4, 0.35f, new Color(90, 90, 90, bgAlpha).getRGB(), 5);
+                float itemScale = (slot * 0.78f) / 18f * (0.85f + 0.15f * fade);
+                float itemX = slotX + slot * 0.12f;
+                float itemY = slotY + slot * 0.12f + (1f - fade) * 2f * sc;
 
-        float slotsStartX = x + padding;
-        float slotsStartY = contentY + padding;
+                if (ItemRender.needsContextRender(stack)) {
+                    ItemRender.drawItemWithContext(context, stack, itemX, itemY, itemScale, a * fade);
+                } else {
+                    ItemRender.drawItem(stack, itemX, itemY, itemScale, a * fade);
+                }
 
-        List<CountLabel> countLabels = new ArrayList<>();
-
-        for (int row = 0; row < INVENTORY_ROWS; row++) {
-            for (int col = 0; col < SLOTS_PER_ROW; col++) {
-                int slotIndex = 9 + row * SLOTS_PER_ROW + col;
-
-                float slotX = slotsStartX + col * (SLOT_SIZE + slotGap);
-                float slotY = slotsStartY + row * (SLOT_SIZE + slotGap);
-
-                ItemStack stack = mc.player.getInventory().getStack(slotIndex);
-
-                Render2D.rect(slotX, slotY, SLOT_SIZE, SLOT_SIZE, new Color(28, 28, 28, bgAlpha).getRGB(), 2);
-
-                if (!stack.isEmpty()) {
-                    float itemSize = 16 * ITEM_SCALE;
-                    float itemX = slotX + (SLOT_SIZE - itemSize) / 2;
-                    float itemY = slotY + (SLOT_SIZE - itemSize) / 2;
-
-                    if (ItemRender.needsContextRender(stack)) {
-                        ItemRender.drawItemWithContext(context, stack, itemX, itemY, ITEM_SCALE, alphaFactor);
-                    } else {
-                        ItemRender.drawItem(stack, itemX, itemY, ITEM_SCALE, alphaFactor);
-                    }
-
-                    int count = stack.getCount();
-                    if (count > 1) {
-                        countLabels.add(new CountLabel(slotX, slotY, count));
-                    }
+                if (stack.getCount() > 1) {
+                    String count = String.valueOf(stack.getCount());
+                    float countWidth = Fonts.BOLD.getWidth(count, font * 0.8f);
+                    Fonts.BOLD.draw(count, slotX + slot - countWidth - 0.8f * sc,
+                            slotY + slot - font * 0.85f, font * 0.8f, HudTheme.text(a * fade));
                 }
             }
         }
 
-        int textAlpha = (int) (255 * alphaFactor);
-        int textColor = (textAlpha << 24) | 0xFFFFFF;
-
-        for (CountLabel label : countLabels) {
-            String countText = String.valueOf(label.count);
-            int textWidth = mc.textRenderer.getWidth(countText);
-            int textX = (int) (label.slotX + SLOT_SIZE - textWidth);
-            int textY = (int) (label.slotY + SLOT_SIZE - mc.textRenderer.fontHeight + 1);
-
-            context.drawText(mc.textRenderer, countText, textX, textY, textColor, true);
-        }
+        Scissor.disable();
     }
-
-    private record CountLabel(float slotX, float slotY, int count) {}
 }

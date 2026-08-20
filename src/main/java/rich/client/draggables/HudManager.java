@@ -23,9 +23,9 @@ public class HudManager {
         register(new Watermark());
         register(new HotKeys());
         register(new Notifications());
-        register(new test());
         register(new Potions());
         register(new CoolDowns());
+        register(new CooldownsFT());
         register(new TargetHud());
         register(new Info());
         register(new Staff());
@@ -92,6 +92,34 @@ public class HudManager {
                 if (element.mouseClicked(mouseX, mouseY, button)) {
                     return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        boolean handled = false;
+        for (HudElement element : elements) {
+            if (isElementEnabled(element) && element.mouseReleased(mouseX, mouseY, button)) {
+                handled = true;
+            }
+        }
+        return handled;
+    }
+
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        for (HudElement element : elements) {
+            if (isElementEnabled(element) && element.keyPressed(keyCode, scanCode, modifiers)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean charTyped(char chr, int modifiers) {
+        for (HudElement element : elements) {
+            if (isElementEnabled(element) && element.charTyped(chr, modifiers)) {
+                return true;
             }
         }
         return false;

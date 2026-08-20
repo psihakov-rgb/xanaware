@@ -3,7 +3,7 @@ package rich.screens.clickgui.impl.autobuy.autobuyui;
 import net.minecraft.client.gui.DrawContext;
 import rich.IMinecraft;
 import rich.modules.module.category.ModuleCategory;
-import rich.screens.clickgui.impl.background.BackgroundComponent;
+import rich.screens.clickgui.theme.GuiTheme;
 
 public class AutoBuyRenderer implements IMinecraft {
 
@@ -71,8 +71,8 @@ public class AutoBuyRenderer implements IMinecraft {
 
         float panelX = bgX + 92f;
         float panelY = bgY + 38f;
-        float panelW = BackgroundComponent.BG_WIDTH - 100f;
-        float panelH = BackgroundComponent.BG_HEIGHT - 46f;
+        float panelW = GuiTheme.FRAME_WIDTH - 100f;
+        float panelH = GuiTheme.FRAME_HEIGHT - 46f;
 
         autoBuyComponent.position(panelX, panelY);
         autoBuyComponent.size(panelW, panelH);
@@ -111,8 +111,8 @@ public class AutoBuyRenderer implements IMinecraft {
 
         float panelX = bgX + 92f;
         float panelY = bgY + 38f;
-        float panelW = BackgroundComponent.BG_WIDTH - 100f;
-        float panelH = BackgroundComponent.BG_HEIGHT - 46f;
+        float panelW = GuiTheme.FRAME_WIDTH - 100f;
+        float panelH = GuiTheme.FRAME_HEIGHT - 46f;
 
         return autoBuyComponent.mouseClicked(mouseX, mouseY, button, panelX, panelY, panelW, panelH);
     }
@@ -128,8 +128,8 @@ public class AutoBuyRenderer implements IMinecraft {
 
         float panelX = bgX + 92f;
         float panelY = bgY + 38f;
-        float panelW = BackgroundComponent.BG_WIDTH - 100f;
-        float panelH = BackgroundComponent.BG_HEIGHT - 46f;
+        float panelW = GuiTheme.FRAME_WIDTH - 100f;
+        float panelH = GuiTheme.FRAME_HEIGHT - 46f;
 
         return autoBuyComponent.mouseScrolled(mouseX, mouseY, amount, panelX, panelY, panelW, panelH);
     }

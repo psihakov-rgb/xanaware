@@ -2,20 +2,22 @@ package rich.screens.hud;
 
 import net.minecraft.client.gui.DrawContext;
 import rich.client.draggables.AbstractHudElement;
-import rich.util.animations.Animation;
-import rich.util.animations.Direction;
-import rich.util.animations.OutBack;
-import rich.util.render.Render2D;
+import rich.screens.hud.theme.HudAnim;
+import rich.screens.hud.theme.HudTheme;
 import rich.util.render.font.Fonts;
+import rich.util.render.shader.Scissor;
 
-import java.awt.*;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
+/**
+ * Glass toasts. Each toast slides in from the right with an overshoot,
+ * stacks with a spring and collapses with a different, softer curve.
+ */
 public class Notifications extends AbstractHudElement {
 
     private static final int FORCED_GUI_SCALE = 2;
+    private static final String CHAT_PREVIEW = "Hi I'm a notification";
 
     private static Notifications instance;
 
@@ -23,32 +25,35 @@ public class Notifications extends AbstractHudElement {
         return instance;
     }
 
+    public static class Notification {
+        public final String text;
+        public final long created;
+        public final long removeTime;
+        final HudAnim.Fade fade = new HudAnim.Fade(0.34f, 0.24f);
+        final HudAnim.Spring offset = new HudAnim.Spring(0f, 200f, 20f);
+        float currentY;
+
+        Notification(String text, long duration) {
+            this.text = text;
+            this.created = System.currentTimeMillis();
+            this.removeTime = this.created + duration;
+            this.fade.direction(true);
+        }
+    }
+
     private final List<Notification> list = new ArrayList<>();
-    private static final float NOTIFICATION_HEIGHT = 16f;
-    private static final float NOTIFICATION_GAP = 3f;
+    private final HudAnim.Clock clock = new HudAnim.Clock();
 
     public Notifications() {
-        super("Notifications", 0, 0, 110, 16, false);
+        super("Notifications", 0, 0, 120, 18, false);
         instance = this;
     }
 
-    private int getCurrentGuiScale() {
-        int scale = mc.options.getGuiScale().getValue();
-        if (scale == 0) {
-            scale = mc.getWindow().calculateScaleFactor(0, mc.forcesUnicodeFont());
-        }
-        return scale;
-    }
-
-    private float getScaleFactor() {
-        return (float) getCurrentGuiScale() / (float) FORCED_GUI_SCALE;
-    }
-
-    private float getVirtualWidth() {
+    private float virtualWidth() {
         return mc.getWindow().getFramebufferWidth() / (float) FORCED_GUI_SCALE;
     }
 
-    private float getVirtualHeight() {
+    private float virtualHeight() {
         return mc.getWindow().getFramebufferHeight() / (float) FORCED_GUI_SCALE;
     }
 
@@ -57,178 +62,88 @@ public class Notifications extends AbstractHudElement {
         return !list.isEmpty();
     }
 
+    public void addNotification(String text, long duration) {
+        list.add(new Notification(text, duration));
+        if (list.size() > 10) list.removeFirst();
+    }
+
     @Override
     public void tick() {
-        list.forEach(notif -> {
-            if (System.currentTimeMillis() > notif.removeTime ||
-                    (notif.text.contains("Hi I'm a notification") && !isChat(mc.currentScreen))) {
-                notif.anim.setDirection(Direction.BACKWARDS);
-            }
-        });
-        list.removeIf(notif -> notif.anim.isFinished(Direction.BACKWARDS));
+        long now = System.currentTimeMillis();
+        for (Notification notification : list) {
+            boolean expired = now > notification.removeTime;
+            boolean stalePreview = notification.text.contains(CHAT_PREVIEW) && !isChat(mc.currentScreen);
+            if (expired || stalePreview) notification.fade.direction(false);
+        }
+        list.removeIf(notification -> notification.fade.hidden());
 
-        if (isChat(mc.currentScreen)) {
-            boolean hasHiNotification = list.stream()
-                    .anyMatch(n -> n.text.contains("Hi I'm a notification"));
-            if (!hasHiNotification) {
-                addNotification("Hi I'm a notification", 99999999);
-            }
+        if (isChat(mc.currentScreen) && list.stream().noneMatch(n -> n.text.contains(CHAT_PREVIEW))) {
+            addNotification(CHAT_PREVIEW, 99999999L);
         }
 
-        updatePosition();
-    }
-
-    private void updatePosition() {
-        if (mc.getWindow() == null) return;
-
-        float virtualWidth = getVirtualWidth();
-        float virtualHeight = getVirtualHeight();
-
-        float crosshairX = virtualWidth / 2f;
-        float crosshairY = virtualHeight / 2f;
-
-        this.setX((int) (crosshairX - 60));
-        this.setY((int) (crosshairY + 100));
-    }
-
-    public void addNotification(String text, long duration) {
-        Animation anim = new OutBack().setMs(700).setValue(1);
-        anim.setDirection(Direction.FORWARDS);
-
-        int targetIndex = list.size();
-        float targetY = targetIndex * (NOTIFICATION_HEIGHT + NOTIFICATION_GAP);
-
-        Notification notification = new Notification(text, anim, System.currentTimeMillis(), System.currentTimeMillis() + duration);
-        notification.currentY = targetY;
-        notification.targetY = targetY;
-        notification.velocityY = 0;
-
-        list.add(notification);
-        if (list.size() > 12) list.removeFirst();
-        list.sort(Comparator.comparingDouble(notif -> -notif.removeTime));
-
-        updateTargetPositions();
-    }
-
-    private void updateTargetPositions() {
-        float offsetY = 0;
-        for (int i = 0; i < list.size(); i++) {
-            Notification notif = list.get(i);
-            float anim = notif.anim.getOutput().floatValue();
-            notif.targetY = offsetY;
-            offsetY += (NOTIFICATION_HEIGHT + NOTIFICATION_GAP) * anim;
+        if (mc.getWindow() != null) {
+            setX((int) (virtualWidth() / 2f - 62f));
+            setY((int) (virtualHeight() / 2f + 96f));
         }
-    }
-
-    private int clampAlpha(int value) {
-        return Math.max(0, Math.min(255, value));
-    }
-
-    private int clampAlpha(float value) {
-        return Math.max(0, Math.min(255, (int) value));
     }
 
     @Override
     public void drawDraggable(DrawContext context, int alpha) {
-        alpha = clampAlpha(alpha);
-        if (alpha <= 0) return;
+        float a = HudAnim.clamp01(alpha / 255f);
+        if (a <= 0.01f || list.isEmpty()) return;
 
-        float alphaFactor = alpha / 255.0f;
-        updatePosition();
-        updateTargetPositions();
+        float dt = clock.delta();
+        float sc = HudTheme.scale();
+        float font = 5.8f * sc;
+        float pad = 6f * sc;
+        float height = 16f * sc;
+        float gap = 3f * sc;
+        float radius = (HudTheme.RADIUS - 1f) * sc;
 
-        float springStiffness = 180f;
-        float damping = 12f;
-        float deltaTime = 0.016f;
+        float baseX = getX();
+        float baseY = getY();
+        float stackY = 0f;
+        float widest = height;
 
-        for (Notification notification : list) {
-            float diff = notification.targetY - notification.currentY;
-            float springForce = diff * springStiffness;
-            float dampingForce = notification.velocityY * damping;
-            float acceleration = springForce - dampingForce;
+        for (int i = 0; i < list.size(); i++) {
+            Notification notification = list.get(i);
+            notification.fade.update(dt);
 
-            notification.velocityY += acceleration * deltaTime;
-            notification.currentY += notification.velocityY * deltaTime;
+            float progress = notification.fade.fade();
+            if (progress <= 0.01f) continue;
 
-            if (Math.abs(diff) < 0.01f && Math.abs(notification.velocityY) < 0.01f) {
-                notification.currentY = notification.targetY;
-                notification.velocityY = 0;
-            }
-        }
+            float pop = notification.fade.value();
+            float width = Fonts.BOLD.getWidth(notification.text, font) + 16f * sc + pad * 2f;
+            widest = Math.max(widest, width);
 
-        float offsetX = 5;
-        float maxWidth = 0;
-        float totalHeight = 0;
+            notification.currentY = notification.offset.update(stackY, dt);
 
-        for (Notification notification : list) {
-            float anim = notification.anim.getOutput().floatValue();
-            if (anim <= 0.01f) continue;
+            float x = baseX + (1f - pop) * 18f * sc;
+            float y = baseY + notification.currentY;
+            float toastAlpha = a * progress;
 
-            anim = Math.max(0f, Math.min(1f, anim));
+            HudTheme.panel(x, y, width, height, radius, toastAlpha);
+            Scissor.enable(x, y, width, height, 2f);
 
-            float textWidth = Fonts.BOLD.getWidth(notification.text, 6);
-            float width = textWidth + offsetX * 2 + 22;
-            maxWidth = Math.max(maxWidth, width);
+            HudTheme.accentBar(x + 3f * sc, y + 3f * sc, 1.6f * sc, height - 6f * sc, toastAlpha, i * 0.6f);
+            Fonts.ICONS.draw("A", x + 6.5f * sc, y + height / 2f - font * 0.95f, font * 1.5f,
+                    HudTheme.accent(toastAlpha, i * 0.5f));
+            Fonts.BOLD.draw(notification.text, x + 16f * sc, y + height / 2f - font * 0.72f, font,
+                    HudTheme.text(toastAlpha));
 
-            float startY = this.getY() + notification.currentY;
-            float startX = this.getX() + (120 - width) / 2;
-
-            int bgAlpha = clampAlpha(225 * anim * alphaFactor);
-            int icAlpha = clampAlpha(155 * anim * alphaFactor);
-
-            if (bgAlpha > 0) {
-                Render2D.gradientRect(startX, startY, width, NOTIFICATION_HEIGHT,
-                        new int[]{
-                                new Color(52, 52, 52, bgAlpha).getRGB(),
-                                new Color(32, 32, 32, bgAlpha).getRGB(),
-                                new Color(52, 52, 52, bgAlpha).getRGB(),
-                                new Color(32, 32, 32, bgAlpha).getRGB()
-                        }, 4);
-
-                Render2D.outline(startX, startY, width, NOTIFICATION_HEIGHT, 0.35f,
-                        new Color(90, 90, 90, bgAlpha).getRGB(), 4);
-
-                Render2D.outline(startX + 2.75f, startY + 2, 12, 12, 0.35f,
-                        new Color(90, 90, 90, bgAlpha).getRGB(), 4);
-
-                Fonts.BOLD.draw(notification.text, startX + offsetX + 16, startY + 4.5f, 6,
-                        new Color(255, 255, 255, bgAlpha).getRGB());
-
-                Fonts.GUI_ICONS.draw("C", startX + 5f, startY + 4f, 8,
-                        new Color(255, 255, 255, icAlpha).getRGB());
+            long duration = Math.max(1L, notification.removeTime - notification.created);
+            float left = HudAnim.clamp01((notification.removeTime - System.currentTimeMillis()) / (float) duration);
+            if (left < 0.999f) {
+                HudTheme.progress(x + pad * 0.5f, y + height - 1.8f * sc, width - pad, 1.1f * sc, left,
+                        toastAlpha * 0.9f);
             }
 
-            totalHeight = Math.max(totalHeight, notification.currentY + NOTIFICATION_HEIGHT);
+            Scissor.disable();
+
+            stackY += (height + gap) * progress;
         }
 
-        if (maxWidth > 0) {
-            setWidth((int) Math.ceil(maxWidth));
-        }
-        setHeight((int) Math.ceil(Math.max(NOTIFICATION_HEIGHT, totalHeight)));
-    }
-
-    public static class Notification {
-        String text;
-        Animation anim;
-        long startTime;
-        long removeTime;
-
-        float currentY;
-        float targetY;
-        float velocityY;
-
-        Notification(String text, Animation anim, long startTime, long removeTime) {
-            this.text = text;
-            this.anim = anim;
-            this.startTime = startTime;
-            this.removeTime = removeTime;
-            this.currentY = 0;
-            this.targetY = 0;
-            this.velocityY = 0;
-        }
-
-        boolean isExpired() {
-            return System.currentTimeMillis() > removeTime;
-        }
+        setWidth((int) Math.ceil(widest));
+        setHeight((int) Math.ceil(Math.max(height, stackY)));
     }
 }

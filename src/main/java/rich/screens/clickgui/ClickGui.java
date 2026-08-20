@@ -9,52 +9,78 @@ import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
 import rich.IMinecraft;
-import rich.Initialization;
-import rich.modules.module.category.ModuleCategory;
 import rich.modules.module.ModuleStructure;
-import rich.screens.clickgui.impl.DragHandler;
-import rich.screens.clickgui.impl.autobuy.autobuyui.AutoBuyRenderer;
-import rich.screens.clickgui.impl.background.BackgroundComponent;
-import rich.screens.clickgui.impl.configs.ConfigsRenderer;
-import rich.screens.clickgui.impl.module.ModuleComponent;
+import rich.modules.module.category.ModuleCategory;
+import rich.screens.clickgui.anim.Ease;
+import rich.screens.clickgui.anim.Tween;
+import rich.screens.clickgui.impl.CategoryTabs;
+import rich.screens.clickgui.impl.ColorPickerPanel;
+import rich.screens.clickgui.impl.LogoWidget;
+import rich.screens.clickgui.impl.ModuleList;
+import rich.screens.clickgui.impl.SearchBar;
+import rich.screens.clickgui.impl.SettingsWindow;
+import rich.screens.clickgui.impl.ThemeSquares;
 import rich.screens.clickgui.impl.settingsrender.BindComponent;
 import rich.screens.clickgui.impl.settingsrender.TextComponent;
-import rich.util.animations.Direction;
-import rich.util.animations.GuiAnimation;
+import rich.screens.clickgui.theme.GuiTheme;
 import rich.util.interfaces.AbstractSettingComponent;
 import rich.util.math.FrameRateCounter;
 import rich.util.render.Render2D;
-import rich.util.render.shader.Scissor;
+import rich.util.render.font.Fonts;
 import rich.util.render.gif.GifRender;
+import rich.util.render.shader.Scissor;
 
-import java.awt.*;
-import java.util.ArrayList;
-import java.util.List;
-
+/**
+ * Unique ClickGui.
+ *
+ * Fixed compact frame: it cannot be resized and cannot be dragged. Left
+ * category sidebar, a search field covering every category, crossfading
+ * category panels, a draggable settings window that is closed only by its own X
+ * button, a bottom bar with the theme squares, and two color pickers behind a
+ * right click on the logo.
+ *
+ * Sounds are disabled.
+ */
 public class ClickGui extends Screen implements IMinecraft {
+
     public static ClickGui INSTANCE = new ClickGui();
     private static final int FIXED_GUI_SCALE = 2;
 
-    private final BackgroundComponent background = new BackgroundComponent();
-    private final ModuleComponent moduleComponent = new ModuleComponent();
-    private final AutoBuyRenderer autoBuyRenderer = new AutoBuyRenderer();
-    private final ConfigsRenderer configsRenderer = new ConfigsRenderer();
-    private final DragHandler dragHandler = new DragHandler();
-    private ModuleCategory selectedCategory = ModuleCategory.COMBAT;
+    private final LogoWidget logo = new LogoWidget();
+    private final CategoryTabs tabs = new CategoryTabs();
+    private final SettingsWindow settings = new SettingsWindow();
+    private final ColorPickerPanel pickers = new ColorPickerPanel();
+    private final ThemeSquares squares = new ThemeSquares();
+    private final SearchBar search = new SearchBar();
 
-    private final GuiAnimation openAnimation = new GuiAnimation();
+    private final ModuleList modules = new ModuleList(new ModuleList.Listener() {
+        @Override
+        public void onSettings(ModuleStructure module) {
+            settings.open(module);
+        }
+    });
+
+    private final Tween fade = new Tween(300f, Tween.Curve.OUT_EXPO).complete(false);
+
     private boolean closing = false;
-    private boolean waitingForSlide = false;
-    private boolean slideTriggered = false;
-
-    private float hintAlphaAnimation = 0f;
-    private long lastHintUpdateTime = System.currentTimeMillis();
-    private static final float HINT_ANIM_SPEED = 6f;
-    private static final float OFFSET_THRESHOLD = 5f;
 
     private int lastMouseX;
     private int lastMouseY;
     private float lastDelta;
+
+    private float frameX;
+    private float frameY;
+
+    // frame position WITHOUT the drag offset. The settings window is anchored
+    // here, so dragging the main frame never drags the settings window along.
+    private float baseFrameX;
+    private float baseFrameY;
+
+    // cached fps label: rebuilt only when the number actually changes, instead
+    // of allocating a new String plus measuring its width on every frame
+    private int cachedFps = -1;
+    private String fpsText = "0 fps";
+    private float fpsWidth = 0f;
 
     public ClickGui() {
         super(Text.of("MenuScreen"));
@@ -67,42 +93,26 @@ public class ClickGui extends Screen implements IMinecraft {
     @Override
     protected void init() {
         super.init();
+
+        GuiTheme.loadOnce();
+
         closing = false;
-        waitingForSlide = false;
-        slideTriggered = false;
-        openAnimation.setMs(250).setValue(1.0).setDirection(Direction.FORWARDS).reset();
-        hintAlphaAnimation = 0f;
-        lastHintUpdateTime = System.currentTimeMillis();
+        fade.restart(true);
+
+        search.clear();
+        search.unfocus();
+        modules.reset();
+        settings.reset();
+        pickers.close();
 
         long handle = mc.getWindow().getHandle();
-        double centerX = mc.getWindow().getWidth() / 2.0;
-        double centerY = mc.getWindow().getHeight() / 2.0;
-        GLFW.glfwSetCursorPos(handle, centerX, centerY);
-
-        background.setSearchActive(false);
-        autoBuyRenderer.resetForClose();
-        updateModules();
-    }
-
-    private void updateModules() {
-        List<ModuleStructure> modules = new ArrayList<>();
-        try {
-            var repo = Initialization.getInstance().getManager().getModuleRepository();
-            if (repo != null) {
-                for (ModuleStructure m : repo.modules()) {
-                    if (m.getCategory() == selectedCategory) modules.add(m);
-                }
-            }
-        } catch (Exception ignored) {}
-        moduleComponent.updateModules(modules, selectedCategory);
+        GLFW.glfwSetCursorPos(handle, mc.getWindow().getWidth() / 2.0, mc.getWindow().getHeight() / 2.0);
     }
 
     public void openGui() {
         if (mc.currentScreen == null) {
             closing = false;
-            waitingForSlide = false;
-            slideTriggered = false;
-            openAnimation.setMs(250).setValue(1.0).setDirection(Direction.FORWARDS).reset();
+            fade.restart(true);
             mc.setScreen(this);
         }
     }
@@ -110,49 +120,8 @@ public class ClickGui extends Screen implements IMinecraft {
     @Override
     public void tick() {
         GifRender.tick();
-        moduleComponent.tick();
+        settings.tick();
         super.tick();
-    }
-
-    private float[] calculateBackground(float scale) {
-        int vw = mc.getWindow().getWidth() / FIXED_GUI_SCALE;
-        int vh = mc.getWindow().getHeight() / FIXED_GUI_SCALE;
-        float bgX = (vw - BackgroundComponent.BG_WIDTH) / 2f + dragHandler.getOffsetX();
-        float bgY = (vh - BackgroundComponent.BG_HEIGHT) / 2f + dragHandler.getOffsetY();
-        return new float[]{bgX, bgY, vw, vh};
-    }
-
-    private boolean isAnyBindListening() {
-        for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-            if (c instanceof BindComponent bindComponent && bindComponent.isListening()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void updateHintAnimation() {
-        long currentTime = System.currentTimeMillis();
-        float deltaTime = Math.min((currentTime - lastHintUpdateTime) / 1000f, 0.1f);
-        lastHintUpdateTime = currentTime;
-
-        float offsetX = Math.abs(dragHandler.getOffsetX());
-        float offsetY = Math.abs(dragHandler.getOffsetY());
-        boolean shouldShow = (offsetX > OFFSET_THRESHOLD || offsetY > OFFSET_THRESHOLD);
-
-        float target = shouldShow ? 1f : 0f;
-        float diff = target - hintAlphaAnimation;
-
-        if (Math.abs(diff) < 0.001f) {
-            hintAlphaAnimation = target;
-        } else {
-            hintAlphaAnimation += diff * HINT_ANIM_SPEED * deltaTime;
-            hintAlphaAnimation = Math.max(0f, Math.min(1f, hintAlphaAnimation));
-        }
-    }
-
-    private boolean isModuleCategory(ModuleCategory category) {
-        return category != ModuleCategory.AUTOBUY ;
     }
 
     @Override
@@ -163,25 +132,19 @@ public class ClickGui extends Screen implements IMinecraft {
 
         FrameRateCounter.INSTANCE.recordFrame();
 
-        if (waitingForSlide && selectedCategory == ModuleCategory.AUTOBUY) {
-            if (!slideTriggered) {
-                autoBuyRenderer.triggerSlideOut();
-                slideTriggered = true;
-            }
-
-            if (autoBuyRenderer.isSlideOutComplete()) {
-                waitingForSlide = false;
-                slideTriggered = false;
-                startActualClose();
-            }
-        }
-
-        if (closing && !waitingForSlide && openAnimation.isFinished(Direction.BACKWARDS)) {
+        if (closing && fade.output() <= 0.002f) {
             closing = false;
             TextComponent.typing = false;
-            moduleComponent.setBindingModule(null);
-            dragHandler.stopDrag();
-            autoBuyRenderer.resetForClose();
+            modules.setBinding(null);
+
+            // free everything the GUI kept in memory while it is not on screen
+            modules.release();
+            settings.reset();
+            pickers.close();
+            search.clear();
+            search.unfocus();
+            cachedFps = -1;
+
             mc.currentScreen = null;
         }
     }
@@ -189,357 +152,296 @@ public class ClickGui extends Screen implements IMinecraft {
     public void renderOverlay(DrawContext context, RenderTickCounter tickCounter) {
         if (mc.getWindow() == null) return;
 
-        float delta = lastDelta;
-        int mouseX = lastMouseX;
-        int mouseY = lastMouseY;
-
-        float scrollSpeed = Math.min(1f, 60f / Math.max(FrameRateCounter.INSTANCE.getFps(), 1));
-        float animValue = openAnimation.getOutput().floatValue();
-
-        int screenWidth = mc.getWindow().getScaledWidth();
-        int screenHeight = mc.getWindow().getScaledHeight();
-
         context.createNewRootLayer();
 
-        int dimAlpha = (int) (125 * animValue);
-        if (dimAlpha > 0) {
-            Render2D.rect(0, 0, 5000, 5000, new Color(0, 0, 0, dimAlpha).getRGB(), 0);
-        }
+        float delta = Math.max(lastDelta, 0.0001f);
+        float alpha = fade.output();
 
-        int guiScale = mc.getWindow().calculateScaleFactor(mc.options.getGuiScale().getValue(), mc.forcesUnicodeFont());
+        Render2D.rect(0, 0, 5000, 5000, (int) (125 * alpha) << 24, 0);
+
+        if (alpha <= 0.003f) return;
+
+        int guiScale = mc.getWindow().calculateScaleFactor(
+                mc.options.getGuiScale().getValue(), mc.forcesUnicodeFont());
         float scale = (float) FIXED_GUI_SCALE / guiScale;
 
-        float mx = mouseX / scale, my = mouseY / scale;
+        int virtualWidth = mc.getWindow().getWidth() / FIXED_GUI_SCALE;
+        int virtualHeight = mc.getWindow().getHeight() / FIXED_GUI_SCALE;
 
-        if (!closing || waitingForSlide) {
-            dragHandler.update(mx, my);
-        }
+        double mouseX = lastMouseX / scale;
+        double mouseY = lastMouseY / scale;
 
-        updateHintAnimation();
+        // the main frame is fixed: always centered, never draggable
+        baseFrameX = (virtualWidth - GuiTheme.FRAME_WIDTH) / 2f;
+        baseFrameY = (virtualHeight - GuiTheme.FRAME_HEIGHT) / 2f;
+
+        frameX = baseFrameX;
+        frameY = baseFrameY;
+
+        layout();
 
         context.getMatrices().pushMatrix();
         context.getMatrices().scale(scale, scale);
 
-        float[] bg = calculateBackground(scale);
-        float bgX = bg[0];
-        float bgY = bg[1];
-        int vw = (int) bg[2];
-        int vh = (int) bg[3];
-
-        float yOffset;
-        if (closing && !waitingForSlide) {
-            yOffset = (1f - animValue) * 30f;
-        } else {
-            yOffset = (1f - animValue) * -15f;
-        }
-        bgY += yOffset;
-
-        float alphaMultiplier = animValue;
-
-        context.getMatrices().pushMatrix();
-
-        background.render(context, bgX, bgY, selectedCategory, delta, alphaMultiplier);
-        background.renderCategoryPanel(bgX, bgY, alphaMultiplier);
-        background.renderHeader(bgX, bgY, selectedCategory, alphaMultiplier);
-        background.renderCategoryNames(bgX, bgY, selectedCategory, alphaMultiplier);
-
-        float mlX = bgX + 92f, mlY = bgY + 38f, mlW = 120f, mlH = BackgroundComponent.BG_HEIGHT - 46f;
-        float spX = bgX + 218f, spY = bgY + 38f, spW = 172f, spH = BackgroundComponent.BG_HEIGHT - 46f;
-
-        float normalAlpha = background.getNormalPanelAlpha();
-        float searchAlpha = background.getSearchPanelAlpha();
-
-        if (normalAlpha > 0.01f) {
-            configsRenderer.render(context, bgX, bgY, mx, my, delta, FIXED_GUI_SCALE, alphaMultiplier * normalAlpha, selectedCategory);
-
-            boolean isAutoBuySliding = autoBuyRenderer.isSliding();
-            boolean shouldRenderModules = isModuleCategory(selectedCategory);
-            boolean slidingToModuleCategory = isAutoBuySliding && isModuleCategory(selectedCategory);
-
-            if (shouldRenderModules || slidingToModuleCategory) {
-                moduleComponent.updateScroll(delta, scrollSpeed);
-                moduleComponent.updateScrollFades(delta, scrollSpeed, mlH, spH);
-                moduleComponent.renderModuleList(context, mlX, mlY, mlW, mlH, mx, my, FIXED_GUI_SCALE, alphaMultiplier * normalAlpha);
-                moduleComponent.renderSettingsPanel(context, spX, spY, spW, spH, mx, my, delta, FIXED_GUI_SCALE, alphaMultiplier * normalAlpha);
-            }
-
-            autoBuyRenderer.render(context, bgX, bgY, mx, my, delta, FIXED_GUI_SCALE, alphaMultiplier * normalAlpha, selectedCategory);
-        }
-
-        if (searchAlpha > 0.01f) {
-            background.renderSearchResults(context, bgX, bgY, mx, my, FIXED_GUI_SCALE, alphaMultiplier);
-        }
+        drawFrame(context, mouseX, mouseY, delta, alpha, guiScale);
 
         Scissor.reset();
-
         context.getMatrices().popMatrix();
+    }
 
-        float finalHintAlpha = hintAlphaAnimation * alphaMultiplier;
-        if (finalHintAlpha > 0.01f) {
-            int hintAlpha = (int) (255 * finalHintAlpha);
-            float centerX = vw / 2f;
-            float centerY = vh / 2f;
-            float textY = centerY + BackgroundComponent.BG_HEIGHT / 2f + 10f;
-//            Fonts.TEST.drawCentered("Press CTRL + ALT to reset position", centerX, textY + 65, 6, new Color(150, 150, 150, hintAlpha).getRGB());
+    private void layout() {
+        logo.layout(frameX + GuiTheme.PADDING, frameY + GuiTheme.TOP_BAR_HEIGHT / 2f - GuiTheme.LOGO_SIZE / 2f);
+
+        tabs.layout(frameX + GuiTheme.PADDING, frameY + GuiTheme.TOP_BAR_HEIGHT + 2f,
+                GuiTheme.SIDEBAR_WIDTH - GuiTheme.PADDING * 2f);
+
+        // search field: top bar, between the client name and the fps label
+        float searchWidth = GuiTheme.FRAME_WIDTH - GuiTheme.SIDEBAR_WIDTH - 48f;
+        search.layout(frameX + GuiTheme.SIDEBAR_WIDTH + 4f,
+                frameY + GuiTheme.TOP_BAR_HEIGHT / 2f - search.getHeight() / 2f, searchWidth);
+
+        float listX = frameX + GuiTheme.SIDEBAR_WIDTH;
+        float listY = frameY + GuiTheme.TOP_BAR_HEIGHT + 2f;
+        float listWidth = GuiTheme.FRAME_WIDTH - GuiTheme.SIDEBAR_WIDTH - GuiTheme.PADDING - 4f;
+        float listHeight = GuiTheme.FRAME_HEIGHT - GuiTheme.TOP_BAR_HEIGHT - GuiTheme.BOTTOM_BAR_HEIGHT - 4f;
+        modules.layout(listX, listY, listWidth, listHeight);
+
+        // independent of the main frame: anchored to the un-dragged position and
+        // moved only by its own drag offset stored inside SettingsWindow
+        settings.layout(baseFrameX + GuiTheme.FRAME_WIDTH + 6f, baseFrameY + GuiTheme.TOP_BAR_HEIGHT);
+
+        pickers.layout(logo.getX(), logo.getY() + logo.getSize() + 4f);
+
+        float barCenterY = frameY + GuiTheme.FRAME_HEIGHT - GuiTheme.BOTTOM_BAR_HEIGHT / 2f;
+        float centerX = frameX + GuiTheme.FRAME_WIDTH / 2f;
+        squares.layout(centerX, barCenterY);
+    }
+
+    private void drawFrame(DrawContext context, double mouseX, double mouseY, float delta,
+                           float alpha, int guiScale) {
+        // background: solid black or the darkened purple gradient
+        if (GuiTheme.isGradient()) {
+            Render2D.gradientRect9(frameX, frameY, GuiTheme.FRAME_WIDTH, GuiTheme.FRAME_HEIGHT,
+                    GuiTheme.gradient9(alpha), GuiTheme.FRAME_RADIUS);
+        } else {
+            Render2D.gradientRect9(frameX, frameY, GuiTheme.FRAME_WIDTH, GuiTheme.FRAME_HEIGHT,
+                    GuiTheme.solid9(Ease.withAlpha(GuiTheme.BASE, alpha)), GuiTheme.FRAME_RADIUS);
         }
 
-        context.getMatrices().popMatrix();
+        Render2D.outline(frameX, frameY, GuiTheme.FRAME_WIDTH, GuiTheme.FRAME_HEIGHT, 0.9f,
+                Ease.withAlpha(GuiTheme.LINE, alpha), GuiTheme.FRAME_RADIUS);
+
+        // sidebar plate
+        Render2D.rect(frameX + 2f, frameY + GuiTheme.TOP_BAR_HEIGHT,
+                GuiTheme.SIDEBAR_WIDTH - 4f,
+                GuiTheme.FRAME_HEIGHT - GuiTheme.TOP_BAR_HEIGHT - 2f,
+                Ease.withAlpha(0x30000000, alpha), 6f);
+
+        // top bar
+        logo.render(mouseX, mouseY, delta, alpha);
+        Fonts.BOLD.draw("UNIQUE", logo.getX() + logo.getSize() + 6f,
+                frameY + GuiTheme.TOP_BAR_HEIGHT / 2f - 5f, 8.5f, Ease.withAlpha(GuiTheme.TEXT, alpha));
+        Fonts.BOLD.draw("client", logo.getX() + logo.getSize() + 6f,
+                frameY + GuiTheme.TOP_BAR_HEIGHT / 2f + 3f, 5.2f, Ease.withAlpha(GuiTheme.TEXT_OFF, alpha));
+
+        int fps = FrameRateCounter.INSTANCE.getFps();
+        if (fps != cachedFps) {
+            cachedFps = fps;
+            fpsText = fps + " fps";
+            fpsWidth = Fonts.BOLD.getWidth(fpsText, 5.6f);
+        }
+        Fonts.BOLD.draw(fpsText, frameX + GuiTheme.FRAME_WIDTH - GuiTheme.PADDING - fpsWidth,
+                frameY + GuiTheme.TOP_BAR_HEIGHT / 2f - 2.8f, 5.6f,
+                Ease.withAlpha(GuiTheme.TEXT_OFF, alpha));
+
+        Render2D.rect(frameX + 6f, frameY + GuiTheme.TOP_BAR_HEIGHT - 0.7f,
+                GuiTheme.FRAME_WIDTH - 12f, 0.7f, Ease.withAlpha(GuiTheme.LINE, alpha), 0f);
+
+        // categories
+        tabs.render(mouseX, mouseY, delta, alpha);
+
+        // search field drives the list: a non empty query searches every category
+        search.render(mouseX, mouseY, delta, alpha);
+        modules.setQuery(search.getQuery());
+
+        if (modules.isSearching()) {
+            modules.render(context, tabs.active(), mouseX, mouseY, delta, alpha, guiScale, true);
+        } else {
+            // Crossfade between the outgoing and the incoming category
+            if (tabs.isTransitioning() && tabs.previous() != null) {
+                modules.render(context, tabs.previous(), mouseX, mouseY, delta,
+                        alpha * tabs.fadeOut(), guiScale, false);
+            }
+            modules.render(context, tabs.active(), mouseX, mouseY, delta,
+                    alpha * tabs.fadeIn(), guiScale, true);
+        }
+
+        // bottom bar
+        Render2D.rect(frameX + 6f, frameY + GuiTheme.FRAME_HEIGHT - GuiTheme.BOTTOM_BAR_HEIGHT,
+                GuiTheme.FRAME_WIDTH - 12f, 0.7f, Ease.withAlpha(GuiTheme.LINE, alpha), 0f);
+
+        squares.render(mouseX, mouseY, delta, alpha);
+
+        String hint = modules.isSearching() ? modules.searchLabel() : tabs.active().getReadableName();
+        Fonts.BOLD.draw(hint, frameX + GuiTheme.PADDING,
+                frameY + GuiTheme.FRAME_HEIGHT - GuiTheme.BOTTOM_BAR_HEIGHT / 2f - 2.6f, 5.8f,
+                Ease.withAlpha(GuiTheme.TEXT_OFF, alpha));
+
+        // floating windows (they early-return internally when fully hidden,
+        // so their close animations still play out)
+        settings.render(context, mouseX, mouseY, delta, alpha, guiScale);
+        pickers.render(mouseX, mouseY, delta, alpha);
+    }
+
+    private double virtualMouseX(Click click) {
+        return click.x() / currentScale();
+    }
+
+    private double virtualMouseY(Click click) {
+        return click.y() / currentScale();
+    }
+
+    private float currentScale() {
+        int guiScale = mc.getWindow().calculateScaleFactor(
+                mc.options.getGuiScale().getValue(), mc.forcesUnicodeFont());
+        return (float) FIXED_GUI_SCALE / guiScale;
+    }
+
+    private boolean isFrame(double mouseX, double mouseY) {
+        return mouseX >= frameX && mouseX <= frameX + GuiTheme.FRAME_WIDTH
+                && mouseY >= frameY && mouseY <= frameY + GuiTheme.FRAME_HEIGHT;
     }
 
     @Override
     public boolean mouseClicked(Click click, boolean doubled) {
-        if (closing) return false;
+        double mouseX = virtualMouseX(click);
+        double mouseY = virtualMouseY(click);
+        int button = click.button();
 
-        int guiScale = mc.getWindow().calculateScaleFactor(mc.options.getGuiScale().getValue(), mc.forcesUnicodeFont());
-        float scale = (float) FIXED_GUI_SCALE / guiScale;
-        double mx = click.x() / scale, my = click.y() / scale;
+        if (pickers.mouseClicked(mouseX, mouseY, button)) return true;
+        if (settings.mouseClicked(mouseX, mouseY, button)) return true;
 
-        float[] bg = calculateBackground(scale);
-        float bgX = bg[0], bgY = bg[1];
+        if (search.mouseClicked(mouseX, mouseY, button)) return true;
 
-        if (background.isSearchBoxHovered(mx, my, bgX, bgY) && click.button() == 0) {
-            background.setSearchActive(true);
-            return true;
+        if (logo.isHover(mouseX, mouseY)) {
+            if (button == 1) {
+                pickers.toggle();
+                return true;
+            }
+            if (button == 0) return true;
         }
 
-        if (background.isSearchActive()) {
-            if (click.button() == 0) {
-                ModuleStructure searchModule = background.getSearchModuleAtPosition(mx, my, bgX, bgY);
-                if (searchModule != null) {
-                    searchModule.switchState();
-                    return true;
-                }
+        if (squares.mouseClicked(mouseX, mouseY, button)) return true;
+        if (tabs.mouseClicked(mouseX, mouseY, button)) return true;
 
-                float panelX = bgX + 92f;
-                float panelY = bgY + 38f;
-                float panelW = BackgroundComponent.BG_WIDTH - 100f;
-                float panelH = BackgroundComponent.BG_HEIGHT - 46f;
-
-                if (mx >= panelX && mx <= panelX + panelW && my >= panelY && my <= panelY + panelH) {
-                    return true;
-                }
-
-                if (!background.isSearchBoxHovered(mx, my, bgX, bgY)) {
-                    background.setSearchActive(false);
-                }
-            } else if (click.button() == 1) {
-                ModuleStructure searchModule = background.getSearchModuleAtPosition(mx, my, bgX, bgY);
-                if (searchModule != null) {
-                    background.setSearchActive(false);
-                    selectedCategory = searchModule.getCategory();
-                    moduleComponent.selectModuleFromSearch(searchModule);
-                    updateModules();
+        if (button == 2 && anyBindListening()) {
+            for (AbstractSettingComponent component : settings.getComponents()) {
+                if (component instanceof BindComponent bind && bind.isListening()) {
+                    bind.handleMiddleMouseBind();
                     return true;
                 }
             }
-            return true;
         }
 
-        if (selectedCategory == ModuleCategory.AUTOBUY) {
-            if (autoBuyRenderer.mouseClicked(mx, my, click.button(), bgX, bgY, selectedCategory)) {
-                return true;
-            }
-        }
+        if (modules.mouseClicked(mouseX, mouseY, button, tabs.active())) return true;
 
-//        if (selectedCategory == ModuleCategory.CONFIGS) {
-//            if (configsRenderer.mouseClicked(mx, my, click.button(), bgX, bgY, selectedCategory)) {
-//                return true;
-//            }
-//        }
-
-        float mlX = bgX + 92f, mlY = bgY + 38f, mlW = 120f, mlH = BackgroundComponent.BG_HEIGHT - 48f;
-
-        if (click.button() == 2) {
-            if (isAnyBindListening()) {
-                for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-                    if (c instanceof BindComponent bindComponent && bindComponent.isListening()) {
-                        bindComponent.handleMiddleMouseBind();
-                        return true;
-                    }
-                }
-            }
-
-            if (moduleComponent.getBindingModule() != null) {
-                return true;
-            }
-
-            ModuleStructure module = moduleComponent.getModuleAtPosition(mx, my, mlX, mlY, mlW, mlH);
-            if (module != null) {
-                moduleComponent.setBindingModule(module);
-                return true;
-            }
-
-            if (dragHandler.startDrag(mx, my, bgX, bgY, BackgroundComponent.BG_WIDTH, BackgroundComponent.BG_HEIGHT)) {
-                return true;
-            }
-        }
-
-        ModuleCategory cat = background.getCategoryAtPosition(mx, my, bgX, bgY);
-        if (cat != null) {
-            selectedCategory = cat;
-            updateModules();
-            return true;
-        }
-
-        if (isModuleCategory(selectedCategory)) {
-            ModuleStructure starModule = moduleComponent.getModuleForStarClick(mx, my, mlX, mlY, mlW, mlH);
-            if (starModule != null && click.button() == 0) {
-                moduleComponent.toggleFavorite(starModule);
-                return true;
-            }
-
-            ModuleStructure module = moduleComponent.getModuleAtPosition(mx, my, mlX, mlY, mlW, mlH);
-            if (module != null) {
-                if (click.button() == 0) module.switchState();
-                else if (click.button() == 1) moduleComponent.selectModule(module);
-                return true;
-            }
-
-            float spX = bgX + 218f, spY = bgY + 38f, spW = 172f, spH = BackgroundComponent.BG_HEIGHT - 48f;
-            if (mx >= spX && mx <= spX + spW && my >= spY && my <= spY + spH) {
-                for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-                    if (c.getSetting().isVisible() && c.mouseClicked(mx, my, click.button())) return true;
-                }
-            }
-        }
+        if (isFrame(mouseX, mouseY)) return true;
 
         return super.mouseClicked(click, doubled);
     }
 
     @Override
     public boolean mouseReleased(Click click) {
-        if (closing) return false;
+        double mouseX = virtualMouseX(click);
+        double mouseY = virtualMouseY(click);
 
-        if (selectedCategory == ModuleCategory.AUTOBUY) {
-            autoBuyRenderer.mouseReleased(click.x(), click.y(), click.button());
-        }
-
-//        if (selectedCategory == ModuleCategory.CONFIGS) {
-//            configsRenderer.mouseReleased(click.x(), click.y(), click.button());
-//        }
-
-        for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-            if (c.getSetting().isVisible() && c.mouseReleased(click.x(), click.y(), click.button())) {
-                return true;
-            }
-        }
+        pickers.mouseReleased();
+        settings.mouseReleased(mouseX, mouseY, click.button());
 
         return super.mouseReleased(click);
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double horizontal, double vertical) {
-        if (closing) return false;
+    public boolean mouseDragged(Click click, double deltaX, double deltaY) {
+        double mouseX = virtualMouseX(click);
+        double mouseY = virtualMouseY(click);
 
-        if (isAnyBindListening()) {
-            for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-                if (c instanceof BindComponent bindComponent && bindComponent.isListening()) {
-                    bindComponent.handleScrollBind(vertical);
+        if (pickers.mouseDragged(mouseX, mouseY)) return true;
+
+        for (AbstractSettingComponent component : settings.getComponents()) {
+            if (component.getSetting().isVisible()
+                    && component.mouseDragged(mouseX, mouseY, click.button(), deltaX, deltaY)) {
+                return true;
+            }
+        }
+
+        return super.mouseDragged(click, deltaX, deltaY);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double horizontal, double vertical) {
+        float scale = currentScale();
+        double mx = lastMouseX / scale;
+        double my = lastMouseY / scale;
+
+        if (anyBindListening()) {
+            for (AbstractSettingComponent component : settings.getComponents()) {
+                if (component instanceof BindComponent bind && bind.isListening()) {
+                    bind.handleScrollBind(vertical);
                     return true;
                 }
             }
         }
 
-        if (moduleComponent.getBindingModule() != null) {
-            return true;
-        }
+        if (settings.mouseScrolled(mx, my, vertical)) return true;
+        if (modules.mouseScrolled(mx, my, vertical)) return true;
 
-        int guiScale = mc.getWindow().calculateScaleFactor(mc.options.getGuiScale().getValue(), mc.forcesUnicodeFont());
-        float scale = (float) FIXED_GUI_SCALE / guiScale;
-        double mx = mouseX / scale, my = mouseY / scale;
-
-        float[] bg = calculateBackground(scale);
-        float bgX = bg[0], bgY = bg[1];
-
-        if (background.isSearchActive()) {
-            float panelX = bgX + 92f;
-            float panelY = bgY + 38f;
-            float panelW = BackgroundComponent.BG_WIDTH - 100f;
-            float panelH = BackgroundComponent.BG_HEIGHT - 46f;
-
-            if (mx >= panelX && mx <= panelX + panelW && my >= panelY && my <= panelY + panelH) {
-                background.handleSearchScroll(vertical, panelH);
-                return true;
-            }
-        }
-
-        if (selectedCategory == ModuleCategory.AUTOBUY) {
-            if (autoBuyRenderer.mouseScrolled(mx, my, vertical, bgX, bgY, selectedCategory)) {
-                return true;
-            }
-        }
-
-//        if (selectedCategory == ModuleCategory.CONFIGS) {
-//            if (configsRenderer.mouseScrolled(mx, my, vertical, bgX, bgY, selectedCategory)) {
-//                return true;
-//            }
-//        }
-
-        float mlX = bgX + 92f, mlY = bgY + 38f, mlW = 120f, mlH = BackgroundComponent.BG_HEIGHT - 48f;
-        if (mx >= mlX && mx <= mlX + mlW && my >= mlY && my <= mlY + mlH) {
-            moduleComponent.handleModuleScroll(vertical, mlH);
-            return true;
-        }
-
-        float spX = bgX + 218f, spY = bgY + 38f, spW = 172f, spH = BackgroundComponent.BG_HEIGHT - 48f;
-        if (mx >= spX && mx <= spX + spW && my >= spY && my <= spY + spH) {
-            moduleComponent.handleSettingScroll(vertical, spH);
-            return true;
-        }
         return super.mouseScrolled(mouseX, mouseY, horizontal, vertical);
+    }
+
+    private boolean anyBindListening() {
+        for (AbstractSettingComponent component : settings.getComponents()) {
+            if (component instanceof BindComponent bind && bind.isListening()) return true;
+        }
+        return false;
     }
 
     @Override
     public boolean keyPressed(KeyInput input) {
+        if (TextComponent.typing) {
+            if (settings.keyPressed(input.key(), input.scancode(), input.modifiers())) return true;
+        }
+
+        if (modules.getBinding() != null) {
+            modules.keyPressed(input.key());
+            return true;
+        }
+
+        // the search field owns the keyboard while it is focused
+        if (search.isFocused() && search.keyPressed(input.key())) return true;
+
+        if (settings.keyPressed(input.key(), input.scancode(), input.modifiers())) return true;
+
         if (input.key() == GLFW.GLFW_KEY_ESCAPE) {
-            if (autoBuyRenderer.isEditing()) {
+            if (pickers.isOpen()) {
+                pickers.close();
                 return true;
             }
-            if (configsRenderer.isEditing()) {
-                return true;
-            }
-            if (background.isSearchActive()) {
-                background.setSearchActive(false);
-                return true;
-            }
+            // the settings window is intentionally NOT closed here: it can be
+            // closed only with its own X button
             close();
             return true;
         }
 
-        if (closing) return false;
-
-        if (selectedCategory == ModuleCategory.AUTOBUY) {
-            if (autoBuyRenderer.keyPressed(input.key(), input.scancode(), input.modifiers())) {
-                return true;
-            }
-        }
-
-//        if (selectedCategory == ModuleCategory.CONFIGS) {
-//            if (configsRenderer.keyPressed(input.key(), input.scancode(), input.modifiers())) {
-//                return true;
-//            }
-//        }
-
-        if (background.isSearchActive()) {
-            if (background.handleSearchKey(input.key())) {
-                return true;
-            }
-        }
-
-        if (dragHandler.isResetNeeded(input.key(), input.modifiers())) {
-            dragHandler.reset();
+        if (input.key() == GLFW.GLFW_KEY_LEFT || input.key() == GLFW.GLFW_KEY_RIGHT) {
+            ModuleCategory[] categories = ModuleCategory.values();
+            int index = tabs.active().ordinal();
+            index += input.key() == GLFW.GLFW_KEY_RIGHT ? 1 : -1;
+            if (index < 0) index = categories.length - 1;
+            if (index >= categories.length) index = 0;
+            tabs.select(categories[index]);
+            modules.resetScroll();
             return true;
-        }
-
-        ModuleStructure binding = moduleComponent.getBindingModule();
-        if (binding != null) {
-            binding.setKey(input.key() == GLFW.GLFW_KEY_DELETE ? GLFW.GLFW_KEY_UNKNOWN : input.key());
-            moduleComponent.setBindingModule(null);
-            return true;
-        }
-
-        for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-            if (c.getSetting().isVisible() && c.keyPressed(input.key(), input.scancode(), input.modifiers())) return true;
         }
 
         return super.keyPressed(input);
@@ -547,29 +449,8 @@ public class ClickGui extends Screen implements IMinecraft {
 
     @Override
     public boolean charTyped(CharInput input) {
-        if (closing) return false;
-
-        if (selectedCategory == ModuleCategory.AUTOBUY) {
-            if (autoBuyRenderer.charTyped((char) input.codepoint(), input.modifiers())) {
-                return true;
-            }
-        }
-
-//        if (selectedCategory == ModuleCategory.CONFIGS) {
-//            if (configsRenderer.charTyped((char) input.codepoint(), input.modifiers())) {
-//                return true;
-//            }
-//        }
-
-        if (background.isSearchActive()) {
-            if (background.handleSearchChar((char) input.codepoint())) {
-                return true;
-            }
-        }
-
-        for (AbstractSettingComponent c : moduleComponent.getSettingComponents()) {
-            if (c.getSetting().isVisible() && c.charTyped((char) input.codepoint(), input.modifiers())) return true;
-        }
+        if (search.isFocused() && search.charTyped((char) input.codepoint())) return true;
+        if (settings.charTyped((char) input.codepoint(), input.modifiers())) return true;
         return super.charTyped(input);
     }
 
@@ -578,35 +459,23 @@ public class ClickGui extends Screen implements IMinecraft {
         return false;
     }
 
-    private void startActualClose() {
-        openAnimation.setDirection(Direction.BACKWARDS);
-        openAnimation.reset();
-
-        long handle = mc.getWindow().getHandle();
-        double centerX = mc.getWindow().getWidth() / 2.0;
-        double centerY = mc.getWindow().getHeight() / 2.0;
-
-        GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_DISABLED);
-        GLFW.glfwSetCursorPos(handle, centerX, centerY);
-
-        TextComponent.typing = false;
-        moduleComponent.setBindingModule(null);
-        background.setSearchActive(false);
-        dragHandler.stopDrag();
-    }
-
     @Override
     public void close() {
-        if (!closing) {
-            closing = true;
+        if (closing) return;
 
-            if (selectedCategory == ModuleCategory.AUTOBUY) {
-                waitingForSlide = true;
-                slideTriggered = false;
-            } else {
-                waitingForSlide = false;
-                startActualClose();
-            }
-        }
+        closing = true;
+        fade.play(false);
+
+        TextComponent.typing = false;
+        modules.setBinding(null);
+        settings.close();
+        pickers.close();
+        search.unfocus();
+
+        GuiTheme.save();
+
+        long handle = mc.getWindow().getHandle();
+        GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_DISABLED);
+        GLFW.glfwSetCursorPos(handle, mc.getWindow().getWidth() / 2.0, mc.getWindow().getHeight() / 2.0);
     }
 }

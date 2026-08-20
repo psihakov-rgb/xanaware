@@ -3,266 +3,183 @@ package rich.screens.hud;
 import net.minecraft.client.gui.DrawContext;
 import rich.client.draggables.AbstractHudElement;
 import rich.modules.impl.render.Hud;
-import rich.util.render.Render2D;
+import rich.screens.hud.theme.HudAnim;
+import rich.screens.hud.theme.HudTheme;
 import rich.util.render.font.Fonts;
+import rich.util.render.shader.Scissor;
 import rich.util.tps.TPSCalculate;
 
-import java.awt.*;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
+/**
+ * Glass pill watermark. Right click opens {@link WatermarkMenu}.
+ * Values roll upwards when they change, the pill width follows a spring,
+ * the logo pulses and every separator fades on its own.
+ */
 public class Watermark extends AbstractHudElement {
 
-    private String lastFps = "";
-    private String oldFps = "";
-    private long fpsAnimationStart = 0;
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm");
 
-    private String lastTime = "";
-    private String oldTime = "";
-    private long timeAnimationStart = 0;
+    private final WatermarkMenu menu = new WatermarkMenu();
+    private final HudAnim.Clock clock = new HudAnim.Clock();
+    private final HudAnim.Spring widthSpring = new HudAnim.Spring(0f, 165f, 19f);
 
-    private String lastTps = "";
-    private String oldTps = "";
-    private long tpsAnimationStart = 0;
-
-    private static final long ANIMATION_DURATION = 200;
-    private static final float ANIMATION_OFFSET = 8.0f;
+    private final Map<String, String> shown = new HashMap<>();
+    private final Map<String, String> previous = new HashMap<>();
+    private final Map<String, Long> changedAt = new HashMap<>();
 
     public Watermark() {
-        super("Watermark", 10, 10, 200, 24, false);
+        super("Watermark", 10, 10, 120, 18, true);
         startAnimation();
+    }
+
+    @Override
+    public float getRoundingRadius() {
+        return HudTheme.RADIUS * HudTheme.scale();
     }
 
     @Override
     public void tick() {
     }
 
-    private int clampAlpha(float alpha) {
-        return Math.max(0, Math.min(255, (int) (alpha * 255)));
+    private String value(String key, String value) {
+        String current = shown.get(key);
+        if (!value.equals(current)) {
+            previous.put(key, current == null ? value : current);
+            shown.put(key, value);
+            changedAt.put(key, System.currentTimeMillis());
+        }
+        return value;
+    }
+
+    /** Digit roll: the old value leaves upwards, the new one arrives from below. */
+    private void drawRolling(String key, String text, float x, float y, float size, float alpha, float lineHeight) {
+        long start = changedAt.getOrDefault(key, 0L);
+        float progress = HudAnim.clamp01((System.currentTimeMillis() - start) / 220f);
+
+        if (progress >= 1f) {
+            Fonts.BOLD.draw(text, x, y, size, HudTheme.text(alpha));
+            return;
+        }
+
+        String old = previous.getOrDefault(key, text);
+        float incoming = HudAnim.easeOutExpo(progress);
+        float outgoing = HudAnim.easeInQuad(progress);
+
+        Fonts.BOLD.draw(old, x, y - lineHeight * outgoing, size, HudTheme.text(alpha * (1f - outgoing)));
+        Fonts.BOLD.draw(text, x, y + lineHeight * (1f - incoming), size, HudTheme.text(alpha * incoming));
     }
 
     @Override
     public void drawDraggable(DrawContext context, int alpha) {
-        if (alpha <= 0) return;
+        float a = HudAnim.clamp01(alpha / 255f);
+        if (a <= 0.01f) return;
 
-        float x = 20;
-        float y = 5;
+        Hud hud = Hud.getInstance();
+        float dt = clock.delta();
+        float sc = HudTheme.scale();
+        float font = 6f * sc;
+        float pad = 7f * sc;
+        float height = 17f * sc;
+        float radius = height / 2f;
 
-        String username = mc.getSession().getUsername();
-        String fpsNumber = String.valueOf(mc.getCurrentFps());
-        String fpsText = "fps";
-        String time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"));
+        String title = hud == null || hud.watermarkTitle.getText() == null || hud.watermarkTitle.getText().isEmpty()
+                ? "xanware"
+                : hud.watermarkTitle.getText();
 
-        boolean showTps = Hud.getInstance() != null && Hud.getInstance().showTps.isValue();
+        List<String[]> segments = new ArrayList<>();
+        segments.add(new String[]{"title", title});
 
-        float tpsValue = 20.0f;
-        if (TPSCalculate.getInstance() != null) {
-            tpsValue = TPSCalculate.getInstance().getTpsRounded();
+        if (hud == null || hud.watermarkNick.isValue()) {
+            segments.add(new String[]{"nick", mc.getSession().getUsername()});
         }
-        String tpsNumber = String.format("%.1f", tpsValue);
-        String tpsText = "tps";
-
-        long currentTime = System.currentTimeMillis();
-
-        if (!fpsNumber.equals(lastFps)) {
-            oldFps = lastFps;
-            lastFps = fpsNumber;
-            fpsAnimationStart = currentTime;
+        if (hud == null || hud.watermarkFps.isValue()) {
+            segments.add(new String[]{"fps", value("fps", mc.getCurrentFps() + " fps")});
         }
-
-        if (!time.equals(lastTime)) {
-            oldTime = lastTime;
-            lastTime = time;
-            timeAnimationStart = currentTime;
+        if (hud != null && hud.showTps.isValue()) {
+            float tps = TPSCalculate.getInstance() == null ? 20f : TPSCalculate.getInstance().getTpsRounded();
+            segments.add(new String[]{"tps", value("tps", String.format(Locale.US, "%.1f tps", tps))});
         }
+        segments.add(new String[]{"time", value("time", LocalTime.now().format(TIME))});
 
-        if (!tpsNumber.equals(lastTps)) {
-            oldTps = lastTps;
-            lastTps = tpsNumber;
-            tpsAnimationStart = currentTime;
+        float logoSize = font * 1.6f;
+        float separator = Fonts.TEST.getWidth("\u00bb", font * 0.9f) + 5f * sc;
+
+        float content = pad + logoSize + 5f * sc;
+        for (int i = 0; i < segments.size(); i++) {
+            content += Fonts.BOLD.getWidth(segments.get(i)[1], font);
+            if (i < segments.size() - 1) content += separator;
         }
+        content += pad;
 
-        float fpsAnimation = Math.min(1.0f, (currentTime - fpsAnimationStart) / (float) ANIMATION_DURATION);
-        float timeAnimation = Math.min(1.0f, (currentTime - timeAnimationStart) / (float) ANIMATION_DURATION);
-        float tpsAnimation = Math.min(1.0f, (currentTime - tpsAnimationStart) / (float) ANIMATION_DURATION);
+        if (widthSpring.get() <= 0.5f) widthSpring.set(content);
+        float width = widthSpring.update(content, dt);
 
-        float usernameWidth = Fonts.BOLD.getWidth(username, 6);
-        float fpsNumberWidth = Fonts.BOLD.getWidth(fpsNumber, 6);
-        float fpsTextWidth = Fonts.BOLD.getWidth(fpsText, 6);
-        float timeWidth = Fonts.BOLD.getWidth(time, 6);
-        float tpsNumberWidth = Fonts.BOLD.getWidth(tpsNumber, 6);
-        float tpsTextWidth = Fonts.BOLD.getWidth(tpsText, 6);
+        setWidth((int) Math.ceil(width));
+        setHeight((int) Math.ceil(height));
 
-        float totalWidth = 10 + 12 + usernameWidth + 10 + 8 + 10 + 12 + fpsNumberWidth + 2 + fpsTextWidth + 10 + 8 + 10 + 12 + timeWidth - 18;
-        float tpsBoxWidth = 10 + 12 + 12 + tpsNumberWidth + 2 + tpsTextWidth + 2;
+        float x = getX();
+        float y = getY();
 
-        if (showTps) {
-            setWidth((int) (totalWidth + tpsBoxWidth + 30));
-        } else {
-            setWidth((int) (totalWidth + 30));
-        }
-        setHeight(22);
+        HudTheme.panel(x, y, width, height, radius, a);
+        Scissor.enable(x, y, width, height, 2f);
 
-        Render2D.gradientRect(x - 12, y + 3, 20, 20,
-                new int[]{
-                        new Color(52, 52, 52, 255).getRGB(),
-                        new Color(22, 22, 22, 255).getRGB(),
-                        new Color(52, 52, 52, 255).getRGB(),
-                        new Color(22, 22, 22, 255).getRGB()
-                },
-                5);
+        float textY = y + height / 2f - font * 0.78f;
 
-        Render2D.outline(x - 12, y + 3, 20, 20, 0.35f, new Color(90, 90, 90, 255).getRGB(), 5);
+        Fonts.ICONS.draw("A", x + pad * 0.85f, y + height / 2f - logoSize * 0.55f, logoSize,
+                HudTheme.accent(a, 0f));
 
-        Render2D.gradientRect(x + 10, y + 3, totalWidth, 20,
-                new int[]{
-                        new Color(52, 52, 52, 255).getRGB(),
-                        new Color(22, 22, 22, 255).getRGB(),
-                        new Color(52, 52, 52, 255).getRGB(),
-                        new Color(22, 22, 22, 255).getRGB()
-                },
-                5);
+        float cursor = x + pad + logoSize + 5f * sc;
+        for (int i = 0; i < segments.size(); i++) {
+            String key = segments.get(i)[0];
+            String text = segments.get(i)[1];
 
-        Render2D.outline(x + 10, y + 3, totalWidth, 20, 0.35f, new Color(90, 90, 90, 255).getRGB(), 5);
+            drawRolling(key, text, cursor, textY, font, a, font * 1.3f);
+            cursor += Fonts.BOLD.getWidth(text, font);
 
-        float tpsBoxX = x + 12 + totalWidth;
-
-        if (showTps) {
-            Render2D.gradientRect(tpsBoxX, y + 3, tpsBoxWidth, 20,
-                    new int[]{
-                            new Color(52, 52, 52, 255).getRGB(),
-                            new Color(22, 22, 22, 255).getRGB(),
-                            new Color(52, 52, 52, 255).getRGB(),
-                            new Color(22, 22, 22, 255).getRGB()
-                    },
-                    5);
-
-            Render2D.outline(tpsBoxX, y + 3, tpsBoxWidth, 20, 0.35f, new Color(90, 90, 90, 255).getRGB(), 5);
-        }
-
-        float textY = y + 7;
-        float textX = x + 10;
-
-        Fonts.ICONS.draw("A", textX - 18, textY, 12, new Color(255, 255, 255, 255).getRGB());
-
-        float offsetX = textX + 5;
-
-        Fonts.CATEGORY_ICONS.draw("d", offsetX, textY + 1, 10, new Color(225, 225, 225, 255).getRGB());
-        offsetX += 12;
-
-        Fonts.BOLD.draw(username, offsetX, textY + 3, 6, new Color(255, 255, 255, 255).getRGB());
-        offsetX += usernameWidth + 5;
-
-        Fonts.TEST.draw("»", offsetX, textY + 1.5f, 8, new Color(155, 155, 155, 255).getRGB());
-        offsetX += 12;
-
-        Fonts.CATEGORY_ICONS.draw("b", offsetX, textY + 2.5f, 9, new Color(225, 225, 225, 255).getRGB());
-        offsetX += 12;
-
-        float fpsOffsetX = offsetX;
-        drawAnimatedTextPerChar(fpsNumber, oldFps, fpsOffsetX, textY + 3, 6, fpsAnimation);
-        offsetX += fpsNumberWidth + 2;
-
-        Fonts.BOLD.draw(fpsText, offsetX, textY + 3, 6, new Color(155, 155, 155, 255).getRGB());
-        offsetX += fpsTextWidth + 5;
-
-        Fonts.TEST.draw("»", offsetX, textY + 1.5f, 8, new Color(155, 155, 155, 255).getRGB());
-        offsetX += 12;
-
-        Fonts.CATEGORY_ICONS.draw("n", offsetX, textY + 2.5f, 9, new Color(225, 225, 225, 255).getRGB());
-        offsetX += 12;
-
-        float timeOffsetX = offsetX;
-        drawAnimatedTextPerChar(time, oldTime, timeOffsetX, textY + 3, 6, timeAnimation);
-
-        if (showTps) {
-            Fonts.ICONSTYPETHO.draw("t", tpsBoxX + 5, textY, 12, new Color(225, 225, 225, 255).getRGB());
-
-            float tpsOffsetX = tpsBoxX + 19;
-
-            Fonts.TEST.draw("»", tpsOffsetX, textY + 1.5f, 8, new Color(155, 155, 155, 255).getRGB());
-            tpsOffsetX += 8;
-
-            drawAnimatedTextPerChar(tpsNumber, oldTps, tpsOffsetX, textY + 3, 6, tpsAnimation);
-            tpsOffsetX += tpsNumberWidth + 2;
-
-            Fonts.BOLD.draw(tpsText, tpsOffsetX, textY + 3, 6, new Color(155, 155, 155, 255).getRGB());
-        }
-    }
-
-    private void drawAnimatedTextPerChar(String newText, String oldText, float x, float y, float size, float progress) {
-        if (oldText.isEmpty() || progress >= 1.0f) {
-            Fonts.BOLD.draw(newText, x, y, size, new Color(255, 255, 255, 255).getRGB());
-            return;
-        }
-
-        float offsetX = x;
-        int maxLen = Math.max(newText.length(), oldText.length());
-
-        String paddedNew = padLeft(newText, maxLen);
-        String paddedOld = padLeft(oldText, maxLen);
-
-        for (int i = 0; i < paddedNew.length(); i++) {
-            char newChar = paddedNew.charAt(i);
-            char oldChar = paddedOld.charAt(i);
-
-            if (newChar == ' ' && oldChar == ' ') {
-                continue;
-            }
-
-            float charWidth = Fonts.BOLD.getWidth(String.valueOf(newChar != ' ' ? newChar : oldChar), size);
-
-            boolean isNewDigit = Character.isDigit(newChar) || newChar == '.';
-            boolean isOldDigit = Character.isDigit(oldChar) || oldChar == '.';
-            boolean hasChanged = newChar != oldChar;
-
-            if (!hasChanged || (!isNewDigit && !isOldDigit)) {
-                if (newChar != ' ') {
-                    Fonts.BOLD.draw(String.valueOf(newChar), offsetX, y, size, new Color(255, 255, 255, 255).getRGB());
-                }
-            } else {
-                float easedProgress = easeOutCubic(progress);
-
-                if (oldChar != ' ' && isOldDigit) {
-                    float oldAlpha = 1.0f - easedProgress;
-                    float oldOffsetY = easedProgress * ANIMATION_OFFSET;
-                    int oldAlphaClamped = clampAlpha(oldAlpha);
-                    if (oldAlphaClamped > 0) {
-                        int oldColor = new Color(255, 255, 255, oldAlphaClamped).getRGB();
-                        Fonts.BOLD.draw(String.valueOf(oldChar), offsetX, y + oldOffsetY, size, oldColor);
-                    }
-                }
-
-                if (newChar != ' ' && isNewDigit) {
-                    float newAlpha = easedProgress;
-                    float newOffsetY = (1.0f - easedProgress) * -ANIMATION_OFFSET;
-                    int newAlphaClamped = clampAlpha(newAlpha);
-                    if (newAlphaClamped > 0) {
-                        int newColor = new Color(255, 255, 255, newAlphaClamped).getRGB();
-                        Fonts.BOLD.draw(String.valueOf(newChar), offsetX, y + newOffsetY, size, newColor);
-                    }
-                }
-            }
-
-            if (newChar != ' ') {
-                offsetX += charWidth;
+            if (i < segments.size() - 1) {
+                float fade = 0.45f + 0.35f * HudAnim.wave(2600f, i * 0.7f);
+                Fonts.TEST.draw("\u00bb", cursor + 2.5f * sc, textY + 0.2f * sc, font * 0.9f,
+                        HudTheme.dim(a * fade));
+                cursor += separator;
             }
         }
+
+        Scissor.disable();
+
+        menu.render(context, x, y + height + 3f * sc, a);
     }
 
-    private String padLeft(String text, int length) {
-        if (text.length() >= length) {
-            return text;
-        }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < length - text.length(); i++) {
-            sb.append(' ');
-        }
-        sb.append(text);
-        return sb.toString();
+    private boolean hovered(double mouseX, double mouseY) {
+        return mouseX >= getX() && mouseX <= getX() + getWidth()
+                && mouseY >= getY() && mouseY <= getY() + getHeight();
     }
 
-    private float easeOutCubic(float t) {
-        return 1.0f - (float) Math.pow(1.0 - t, 3);
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (menu.mouseClicked(mouseX, mouseY, button)) return true;
+
+        if (button == 1 && hovered(mouseX, mouseY)) {
+            menu.toggle();
+            menu.updateHover(mouseX, mouseY);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        return menu.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
+    public boolean charTyped(char chr, int modifiers) {
+        return menu.charTyped(chr, modifiers);
     }
 }
