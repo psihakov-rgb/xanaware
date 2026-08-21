@@ -5,9 +5,15 @@ import rich.util.render.Render2D;
 import rich.util.render.shader.Scissor;
 
 /**
- * Central glassmorphism theme of the HUD.
- * All elements draw their background through {@link #panel}, so switching the
+ * Central glassmorphism theme of the HUD, visual language v2 "Prism".
+ *
+ * <p>All elements draw their background through {@link #panel}, so switching the
  * "Фон" setting between default / gradient / blur restyles the whole interface at once.
+ *
+ * <p>What changed against v1: the silhouette is nearly square instead of pill shaped,
+ * every panel is marked by an accent rail on its left edge, the gradient runs vertically
+ * instead of horizontally, the idle highlight sweeps top to bottom instead of left to right,
+ * and the stock accent moved from blue to a mint/violet pair.
  *
  * <p>Geometry rules: every size comes from one base unit multiplied by a value of the
  * modular scale, then snapped to a whole pixel of the current GUI scale. That keeps
@@ -26,13 +32,18 @@ public final class HudTheme {
     /** Golden ratio, used where two sizes have to relate to each other. */
     public static final float PHI = 1.6180339887f;
 
-    public static final float RADIUS = UNIT * PHI;
+    /** v2 silhouette: crisp corners instead of the old pill radius. */
+    public static final float RADIUS = UNIT * 0.75f;
+
+    /** Width of the accent rail that marks the left edge of every panel. */
+    public static final float RAIL = 1.4f;
 
     /** Single period shared by the accent pulse and the travelling glass highlight. */
-    public static final float PULSE_MS = 3200f;
+    public static final float PULSE_MS = 4200f;
 
     private static final int[] CORNERS_4 = new int[4];
     private static final int[] CORNERS_8 = new int[8];
+    private static final int[] CORNERS_9 = new int[9];
 
     private HudTheme() {
     }
@@ -65,6 +76,11 @@ public final class HudTheme {
     /** A measure of the layout grid: {@code units} base units, scaled and snapped. */
     public static float grid(float units) {
         return snap(UNIT * units * scale());
+    }
+
+    /** Rail thickness for the current scale, never thinner than half a pixel. */
+    public static float railWidth() {
+        return Math.max(0.5f, snap(RAIL * scale()));
     }
 
     public static boolean isGradient() {
@@ -107,14 +123,17 @@ public final class HudTheme {
     }
 
     public static int dim(float alpha) {
-        return rgba(150, 154, 168, HudAnim.clamp01(alpha) * 0.9f);
+        return rgba(142, 150, 170, HudAnim.clamp01(alpha) * 0.9f);
     }
 
     public static int dimBright(float alpha) {
-        return rgba(206, 210, 224, HudAnim.clamp01(alpha) * 0.95f);
+        return rgba(212, 218, 232, HudAnim.clamp01(alpha) * 0.95f);
     }
 
-    /** Slowly breathing accent color, phase lets elements desynchronise. */
+    /**
+     * Slowly breathing accent color, phase lets elements desynchronise.
+     * v2 stock palette: mint breathing into violet.
+     */
     public static int accent(float alpha, float phase) {
         float pulse = HudAnim.wave(PULSE_MS, phase);
         if (isGradient()) {
@@ -123,11 +142,12 @@ public final class HudTheme {
             int red = (int) HudAnim.lerp((from >> 16) & 0xFF, (to >> 16) & 0xFF, pulse);
             int green = (int) HudAnim.lerp((from >> 8) & 0xFF, (to >> 8) & 0xFF, pulse);
             int blue = (int) HudAnim.lerp(from & 0xFF, to & 0xFF, pulse);
-            return rgba(Math.max(red, 90), Math.max(green, 90), Math.max(blue, 110), alpha);
+            return rgba(Math.max(red, 96), Math.max(green, 96), Math.max(blue, 112), alpha);
         }
-        int red = (int) HudAnim.lerp(150, 205, pulse);
-        int green = (int) HudAnim.lerp(180, 225, pulse);
-        return rgba(red, green, 255, alpha);
+        int red = (int) HudAnim.lerp(122, 178, pulse);
+        int green = (int) HudAnim.lerp(238, 148, pulse);
+        int blue = (int) HudAnim.lerp(206, 255, pulse);
+        return rgba(red, green, blue, alpha);
     }
 
     public static int accentText(float alpha) {
@@ -145,132 +165,193 @@ public final class HudTheme {
         if (a <= 0.01f) return;
 
         if (isBlur()) {
-            float depth = UNIT * 2.5f + UNIT * 2f * HudAnim.easeOutCubic(a);
-            Render2D.blur(x, y, width, height, depth, radius, rgba(10, 12, 18, 0.32f * a));
-            CORNERS_4[0] = rgba(255, 255, 255, 0.12f * a);
-            CORNERS_4[1] = rgba(255, 255, 255, 0.05f * a);
-            CORNERS_4[2] = rgba(255, 255, 255, 0.02f * a);
-            CORNERS_4[3] = rgba(255, 255, 255, 0.08f * a);
-            Render2D.gradientRect(x, y, width, height, CORNERS_4, radius);
+            // Liquid glass: real blur underneath, then a lens whose core is brighter than
+            // its rim, so the surface reads as a thick pane instead of a flat white veil.
+            float depth = UNIT * 3f + UNIT * 2.5f * HudAnim.easeOutCubic(a);
+            Render2D.blur(x, y, width, height, depth, radius, rgba(8, 10, 16, 0.3f * a));
+
+            int rim = rgba(255, 255, 255, 0.025f * a);
+            int edge = rgba(255, 255, 255, 0.07f * a);
+            int core = rgba(255, 255, 255, 0.14f * a);
+            CORNERS_9[0] = rim;
+            CORNERS_9[1] = edge;
+            CORNERS_9[2] = rim;
+            CORNERS_9[3] = edge;
+            CORNERS_9[4] = core;
+            CORNERS_9[5] = edge;
+            CORNERS_9[6] = rgba(0, 0, 0, 0.1f * a);
+            CORNERS_9[7] = rgba(0, 0, 0, 0.06f * a);
+            CORNERS_9[8] = rgba(0, 0, 0, 0.1f * a);
+            Render2D.gradientRect9(x, y, width, height, CORNERS_9, radius);
+
             outlineGlass(x, y, width, height, radius, a);
-        } else if (isGradient()) {
-            Render2D.rect(x, y, width, height, rgba(6, 6, 9, 0.62f * a), radius);
-            int from = alpha(first(), 0.72f * a);
-            int to = alpha(second(), 0.72f * a);
-            CORNERS_4[0] = from;
-            CORNERS_4[1] = to;
-            CORNERS_4[2] = to;
-            CORNERS_4[3] = from;
-            Render2D.gradientRect(x, y, width, height, CORNERS_4, radius);
-            outlineGlass(x, y, width, height, radius, a * 0.85f);
-        } else {
-            // Cheapest path: one rounded rect plus a hairline outline, no shader passes.
-            Render2D.rect(x, y, width, height, rgba(7, 8, 11, 0.84f * a), radius);
-            Render2D.outline(x, y, width, height, 0.5f, rgba(255, 255, 255, 0.08f * a), radius);
+            gloss(x, y, width, radius, a);
+            rail(x, y, height, radius, a);
+            sheen(x, y, width, height, a);
             return;
         }
 
-        shine(x, y, width, height, radius, a);
+        if (isGradient()) {
+            Render2D.rect(x, y, width, height, rgba(5, 5, 8, 0.66f * a), radius);
+
+            // v2 runs the two chosen colors top to bottom instead of left to right.
+            int from = alpha(first(), 0.74f * a);
+            int to = alpha(second(), 0.74f * a);
+            CORNERS_4[0] = from;
+            CORNERS_4[1] = from;
+            CORNERS_4[2] = to;
+            CORNERS_4[3] = to;
+            Render2D.gradientRect(x, y, width, height, CORNERS_4, radius);
+
+            outlineGlass(x, y, width, height, radius, a * 0.85f);
+            gloss(x, y, width, radius, a);
+            rail(x, y, height, radius, a);
+            return;
+        }
+
+        // Cheapest path: one flat rect, one hairline, one rail. No shader or scissor passes.
+        Render2D.rect(x, y, width, height, rgba(6, 7, 10, 0.86f * a), radius);
+        Render2D.rect(x + radius, y, Math.max(0f, width - radius * 2f), 0.5f,
+                rgba(255, 255, 255, 0.1f * a));
+        rail(x, y, height, radius, a);
     }
 
-    /** Glass edge: bright on top, dark at the bottom. */
-    public static void outlineGlass(float x, float y, float width, float height, float radius, float alpha) {
+    /** v2 signature mark: accent rail down the left edge of a panel. */
+    public static void rail(float x, float y, float height, float radius, float alpha) {
         float a = HudAnim.clamp01(alpha);
-        int top = rgba(255, 255, 255, 0.34f * a);
-        int side = rgba(255, 255, 255, 0.16f * a);
-        int bottom = rgba(255, 255, 255, 0.08f * a);
-        int left = rgba(255, 255, 255, 0.2f * a);
-        CORNERS_8[0] = top;
-        CORNERS_8[1] = top;
-        CORNERS_8[2] = side;
-        CORNERS_8[3] = side;
-        CORNERS_8[4] = bottom;
-        CORNERS_8[5] = bottom;
-        CORNERS_8[6] = left;
-        CORNERS_8[7] = left;
-        Render2D.gradientOutline(x, y, width, height, 0.7f, CORNERS_8, radius);
-    }
+        float width = railWidth();
+        float inset = Math.min(radius * 0.5f, height * 0.25f);
+        float tall = Math.max(0f, height - inset * 2f);
+        if (tall <= 0.01f) return;
 
-    /** Static gloss on the top edge plus a slow travelling highlight. */
-    private static void shine(float x, float y, float width, float height, float radius, float alpha) {
-        float a = HudAnim.clamp01(alpha);
-        int glossTop = rgba(255, 255, 255, 0.16f * a);
-        CORNERS_4[0] = glossTop;
-        CORNERS_4[1] = glossTop;
-        CORNERS_4[2] = 0;
-        CORNERS_4[3] = 0;
-        Render2D.gradientRect(x + radius * 0.6f, y + 0.6f, width - radius * 1.2f,
-                Math.min(height * 0.35f, UNIT + 1f), CORNERS_4, radius * 0.5f);
-
-        if (!isBlur()) return;
-
-        float travel = HudAnim.easeInOutQuint(HudAnim.saw(PULSE_MS, 0f));
-        float bandWidth = Math.max(UNIT * 3.5f, width * 0.28f);
-        float bandX = x - bandWidth + (width + bandWidth * 2f) * travel;
-        int band = rgba(255, 255, 255, 0.07f * a * a);
-
-        Scissor.enable(x, y, width, height, 2f);
-        CORNERS_4[0] = 0;
-        CORNERS_4[1] = band;
-        CORNERS_4[2] = band;
-        CORNERS_4[3] = 0;
-        Render2D.gradientRect(bandX, y, bandWidth, height, CORNERS_4, 0f);
-        Scissor.disable();
-    }
-
-    /** Small frosted holder for icons and values. */
-    public static void chip(float x, float y, float width, float height, float radius, float alpha) {
-        float a = HudAnim.clamp01(alpha);
-        if (a <= 0.01f) return;
-        CORNERS_4[0] = rgba(255, 255, 255, 0.14f * a);
-        CORNERS_4[1] = rgba(255, 255, 255, 0.07f * a);
-        CORNERS_4[2] = rgba(255, 255, 255, 0.04f * a);
-        CORNERS_4[3] = rgba(255, 255, 255, 0.1f * a);
-        Render2D.gradientRect(x, y, width, height, CORNERS_4, radius);
-        Render2D.outline(x, y, width, height, 0.5f, rgba(255, 255, 255, 0.16f * a), radius);
-    }
-
-    public static void divider(float x, float y, float width, float alpha) {
-        float a = HudAnim.clamp01(alpha);
-        int edge = rgba(255, 255, 255, 0.02f * a);
-        int middle = rgba(255, 255, 255, 0.22f * a);
-        CORNERS_4[0] = edge;
-        CORNERS_4[1] = middle;
-        CORNERS_4[2] = middle;
-        CORNERS_4[3] = edge;
-        Render2D.gradientRect(x, y, width, 0.7f, CORNERS_4, 0.35f);
-    }
-
-    public static void accentBar(float x, float y, float width, float height, float alpha, float phase) {
-        float a = HudAnim.clamp01(alpha);
-        int head = accent(0.95f * a, phase);
-        int tail = accent(0.35f * a, phase + 1.4f);
+        int head = accent(0.95f * a, 0f);
+        int tail = accent(0.22f * a, 1.7f);
         CORNERS_4[0] = head;
         CORNERS_4[1] = head;
         CORNERS_4[2] = tail;
         CORNERS_4[3] = tail;
-        Render2D.gradientRect(x, y, width, height, CORNERS_4, width / 2f);
+        Render2D.gradientRect(x, y + inset, width, tall, CORNERS_4, width * 0.5f);
     }
 
+    /** Glass edge: lit from the top left, shaded at the bottom. */
+    public static void outlineGlass(float x, float y, float width, float height, float radius, float alpha) {
+        float a = HudAnim.clamp01(alpha);
+        int top = rgba(255, 255, 255, 0.3f * a);
+        int right = rgba(255, 255, 255, 0.06f * a);
+        int bottom = rgba(0, 0, 0, 0.22f * a);
+        int left = rgba(255, 255, 255, 0.22f * a);
+        CORNERS_8[0] = top;
+        CORNERS_8[1] = top;
+        CORNERS_8[2] = right;
+        CORNERS_8[3] = right;
+        CORNERS_8[4] = bottom;
+        CORNERS_8[5] = bottom;
+        CORNERS_8[6] = left;
+        CORNERS_8[7] = left;
+        Render2D.gradientOutline(x, y, width, height, 0.6f, CORNERS_8, radius);
+    }
+
+    /** Static highlight sitting on the top edge. */
+    private static void gloss(float x, float y, float width, float radius, float alpha) {
+        float a = HudAnim.clamp01(alpha);
+        int top = rgba(255, 255, 255, 0.14f * a);
+        CORNERS_4[0] = top;
+        CORNERS_4[1] = top;
+        CORNERS_4[2] = 0;
+        CORNERS_4[3] = 0;
+        Render2D.gradientRect(x + radius, y + 0.5f, Math.max(0f, width - radius * 2f),
+                UNIT * 0.9f, CORNERS_4, radius * 0.5f);
+    }
+
+    /**
+     * v2 idle motion: a soft band scanning top to bottom, drawn as two stacked halves
+     * so it fades in and out symmetrically. v1 swept left to right instead.
+     */
+    private static void sheen(float x, float y, float width, float height, float alpha) {
+        float a = HudAnim.clamp01(alpha);
+        float travel = HudAnim.easeInOutQuint(HudAnim.saw(PULSE_MS, 0f));
+        float band = Math.max(UNIT * 2.5f, height * 0.45f);
+        float half = band * 0.5f;
+        float bandY = y - band + (height + band * 2f) * travel;
+        int tint = rgba(255, 255, 255, 0.06f * a * a);
+
+        Scissor.enable(x, y, width, height, 2f);
+        CORNERS_4[0] = 0;
+        CORNERS_4[1] = 0;
+        CORNERS_4[2] = tint;
+        CORNERS_4[3] = tint;
+        Render2D.gradientRect(x, bandY, width, half, CORNERS_4, 0f);
+        CORNERS_4[0] = tint;
+        CORNERS_4[1] = tint;
+        CORNERS_4[2] = 0;
+        CORNERS_4[3] = 0;
+        Render2D.gradientRect(x, bandY + half, width, half, CORNERS_4, 0f);
+        Scissor.disable();
+    }
+
+    /** Small holder for icons and values. v2 draws it as a bracket with an accent edge. */
+    public static void chip(float x, float y, float width, float height, float radius, float alpha) {
+        float a = HudAnim.clamp01(alpha);
+        if (a <= 0.01f) return;
+        CORNERS_4[0] = rgba(255, 255, 255, 0.1f * a);
+        CORNERS_4[1] = rgba(255, 255, 255, 0.05f * a);
+        CORNERS_4[2] = rgba(0, 0, 0, 0.16f * a);
+        CORNERS_4[3] = rgba(0, 0, 0, 0.12f * a);
+        Render2D.gradientRect(x, y, width, height, CORNERS_4, radius);
+        Render2D.rect(x, y, Math.max(0.5f, snap(0.8f * scale())), height,
+                accent(0.75f * a, 0.5f), radius * 0.6f);
+        Render2D.outline(x, y, width, height, 0.5f, rgba(255, 255, 255, 0.1f * a), radius);
+    }
+
+    /** v2 divider: accent at the rail side, fading out to the right. */
+    public static void divider(float x, float y, float width, float alpha) {
+        float a = HudAnim.clamp01(alpha);
+        int head = accent(0.6f * a, 0.3f);
+        int tail = rgba(255, 255, 255, 0f);
+        CORNERS_4[0] = head;
+        CORNERS_4[1] = tail;
+        CORNERS_4[2] = tail;
+        CORNERS_4[3] = head;
+        Render2D.gradientRect(x, y, width, Math.max(0.5f, snap(0.6f * scale())), CORNERS_4, 0.3f);
+    }
+
+    public static void accentBar(float x, float y, float width, float height, float alpha, float phase) {
+        float a = HudAnim.clamp01(alpha);
+        int head = accent(a, phase);
+        int tail = accent(0.2f * a, phase + 1.8f);
+        CORNERS_4[0] = head;
+        CORNERS_4[1] = head;
+        CORNERS_4[2] = tail;
+        CORNERS_4[3] = tail;
+        Render2D.gradientRect(x, y, width, height, CORNERS_4, width * 0.4f);
+    }
+
+    /** v2 marker: a pulsing rounded square with a hairline edge, not a plain circle. */
     public static void accentDot(float x, float y, float size, float alpha, float phase) {
         float a = HudAnim.clamp01(alpha);
-        float pulse = 0.75f + 0.25f * HudAnim.wave(1400f, phase);
-        Render2D.rect(x, y, size * pulse, size * pulse, accent(a, phase), size / 2f);
+        float pulse = 0.7f + 0.3f * HudAnim.wave(1600f, phase);
+        float side = size * pulse;
+        Render2D.rect(x, y, side, side, accent(a, phase), side * 0.3f);
+        Render2D.outline(x, y, side, side, 0.4f, rgba(255, 255, 255, 0.22f * a), side * 0.3f);
     }
 
     public static void progress(float x, float y, float width, float height, float value, float alpha) {
         float a = HudAnim.clamp01(alpha);
         float filled = Math.max(0f, width * HudAnim.clamp01(value));
-        Render2D.rect(x, y, width, height, rgba(255, 255, 255, 0.08f * a), height / 2f);
+        float radius = height * 0.35f;
+        Render2D.rect(x, y, width, height, rgba(255, 255, 255, 0.07f * a), radius);
         if (filled <= 0.01f) return;
+
+        int tail = accent(0.45f * a, 1.5f);
         int head = accent(a, 0f);
-        int tail = accent(a, 1.2f);
-        int headDim = accent(a * 0.8f, 1.2f);
-        int tailDim = accent(a * 0.8f, 0f);
-        CORNERS_4[0] = head;
-        CORNERS_4[1] = tail;
-        CORNERS_4[2] = headDim;
-        CORNERS_4[3] = tailDim;
-        Render2D.gradientRect(x, y, filled, height, CORNERS_4, height / 2f);
+        CORNERS_4[0] = tail;
+        CORNERS_4[1] = head;
+        CORNERS_4[2] = head;
+        CORNERS_4[3] = tail;
+        Render2D.gradientRect(x, y, filled, height, CORNERS_4, radius);
+
+        // Bright cap on the leading edge so the direction of travel is readable.
+        float cap = Math.min(height * 1.8f, filled);
+        Render2D.rect(x + filled - cap, y, cap, height, rgba(255, 255, 255, 0.45f * a), radius);
     }
 }
