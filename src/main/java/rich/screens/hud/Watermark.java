@@ -5,6 +5,7 @@ import rich.client.draggables.AbstractHudElement;
 import rich.modules.impl.render.Hud;
 import rich.screens.hud.theme.HudAnim;
 import rich.screens.hud.theme.HudTheme;
+import rich.util.render.Render2D;
 import rich.util.render.font.Fonts;
 import rich.util.render.shader.Scissor;
 import rich.util.tps.TPSCalculate;
@@ -18,9 +19,13 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Glass pill watermark. Right click opens {@link WatermarkMenu}.
- * Values roll upwards when they change, the pill width follows a spring,
- * the logo pulses and every separator fades on its own.
+ * Watermark card, visual language v2. Right click opens {@link WatermarkMenu}.
+ *
+ * <p>v2 look: a squarer card with the shared accent rail instead of the v1 glass pill, and
+ * thin vertical ticks between the segments instead of a guillemet glyph.
+ *
+ * <p>Animation: values roll upwards when they change, the card width follows a spring, the logo
+ * pulses on the shared accent wave and every tick fades on its own phase.
  */
 public class Watermark extends AbstractHudElement {
 
@@ -85,9 +90,11 @@ public class Watermark extends AbstractHudElement {
         float dt = clock.delta();
         float sc = HudTheme.scale();
         float font = 6f * sc;
-        float pad = 7f * sc;
+        float pad = 6.5f * sc;
         float height = 17f * sc;
-        float radius = height / 2f;
+        // v2: the card keeps the shared theme radius instead of the old full pill.
+        float radius = HudTheme.RADIUS * sc;
+        float rail = HudTheme.railWidth();
 
         String title = hud == null || hud.watermarkTitle.getText() == null || hud.watermarkTitle.getText().isEmpty()
                 ? "xanware"
@@ -108,10 +115,10 @@ public class Watermark extends AbstractHudElement {
         }
         segments.add(new String[]{"time", value("time", LocalTime.now().format(TIME))});
 
-        float logoSize = font * 1.6f;
-        float separator = Fonts.TEST.getWidth("\u00bb", font * 0.9f) + 5f * sc;
+        float logoSize = font * 1.55f;
+        float separator = 7f * sc;
 
-        float content = pad + logoSize + 5f * sc;
+        float content = rail + pad + logoSize + 5f * sc;
         for (int i = 0; i < segments.size(); i++) {
             content += Fonts.BOLD.getWidth(segments.get(i)[1], font);
             if (i < segments.size() - 1) content += separator;
@@ -132,10 +139,10 @@ public class Watermark extends AbstractHudElement {
 
         float textY = y + height / 2f - font * 0.78f;
 
-        Fonts.ICONS.draw("A", x + pad * 0.85f, y + height / 2f - logoSize * 0.55f, logoSize,
+        Fonts.ICONS.draw("A", x + rail + pad * 0.7f, y + height / 2f - logoSize * 0.55f, logoSize,
                 HudTheme.accent(a, 0f));
 
-        float cursor = x + pad + logoSize + 5f * sc;
+        float cursor = x + rail + pad + logoSize + 5f * sc;
         for (int i = 0; i < segments.size(); i++) {
             String key = segments.get(i)[0];
             String text = segments.get(i)[1];
@@ -144,9 +151,12 @@ public class Watermark extends AbstractHudElement {
             cursor += Fonts.BOLD.getWidth(text, font);
 
             if (i < segments.size() - 1) {
-                float fade = 0.45f + 0.35f * HudAnim.wave(2600f, i * 0.7f);
-                Fonts.TEST.draw("\u00bb", cursor + 2.5f * sc, textY + 0.2f * sc, font * 0.9f,
-                        HudTheme.dim(a * fade));
+                // v2 separator: a thin vertical tick that breathes on its own phase.
+                float fade = 0.35f + 0.35f * HudAnim.wave(2600f, i * 0.7f);
+                float tickHeight = height * 0.34f;
+                Render2D.rect(cursor + separator * 0.42f, y + (height - tickHeight) / 2f,
+                        Math.max(0.5f, 0.7f * sc), tickHeight,
+                        HudTheme.accent(a * fade, i * 0.6f), 0.35f * sc);
                 cursor += separator;
             }
         }

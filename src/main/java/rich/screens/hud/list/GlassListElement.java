@@ -19,11 +19,19 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Shared glass card used by every list-like HUD element.
+ * Shared glass card used by every list-like HUD element, visual language v2.
  *
- * <p>Layout: all measures are whole multiples of {@link HudTheme#UNIT} taken through
- * {@link HudTheme#grid(float)}, so paddings, row heights and radii stay in exact proportion
- * at any "Размер" value and land on whole pixels.
+ * <p>Layout v2: the accent rail of {@link HudTheme#panel} owns the left edge, so all content is
+ * inset past it. The header keeps the icon and the title on one baseline with a row counter
+ * pushed to the far right, and values are set as plain right aligned text instead of sitting in
+ * their own chips. All measures are whole multiples of {@link HudTheme#UNIT} taken through
+ * {@link HudTheme#grid(float)}, so paddings, row heights and radii stay in exact proportion at
+ * any "Размер" value and land on whole pixels.
+ *
+ * <p>Animation v2, a different curve per kind of movement: the card size follows two springs, a
+ * row drops in from above, its value slides in from the right, its opacity uses an exponential
+ * fade and warnings blink on a sine wave. Every one of them reads the one shared HUD delta, so
+ * nothing drifts apart at any frame rate.
  *
  * <p>Performance: game data and text measurement run on a 20 Hz budget, while animation keeps
  * the full frame rate. Nothing is allocated per frame - the row map, the fade map, the slide map
@@ -96,16 +104,23 @@ public abstract class GlassListElement extends AbstractHudElement {
     /** Text measurement, done once per refresh instead of once per frame. */
     private float measure(List<Row> rows, float scale) {
         float font = HudTheme.UNIT * 1.5f * scale;
-        float pad = HudTheme.grid(1.5f);
+        float rail = HudTheme.railWidth();
+        float inset = HudTheme.grid(1.25f);
+        float gap = HudTheme.grid(1f);
         float icon = HudTheme.grid(2.25f);
-        float widest = Fonts.BOLD.getWidth(title, font) + HudTheme.grid(5f);
+        float glyph = iconFont.getWidth(iconGlyph, font * 1.15f);
+
+        // Header: rail, icon glyph, title, then room for the two digit row counter.
+        float widest = rail + inset + glyph + gap + Fonts.BOLD.getWidth(title, font)
+                + gap * 2f + Fonts.BOLD.getWidth("00", font * 0.85f) + inset;
 
         for (int i = 0; i < rows.size(); i++) {
             Row row = rows.get(i);
-            float width = pad * 2f + icon + HudTheme.grid(1f)
+            float width = rail + inset + icon + gap
                     + Fonts.BOLD.getWidth(row.label, font)
-                    + (row.suffix == null ? 0f : Fonts.BOLD.getWidth(row.suffix, font * 0.85f) + HudTheme.grid(1.25f))
-                    + (row.value == null ? 0f : Fonts.BOLD.getWidth(row.value, font * 0.9f) + HudTheme.grid(2f));
+                    + (row.suffix == null ? 0f : Fonts.BOLD.getWidth(row.suffix, font * 0.85f) + gap * 0.5f)
+                    + (row.value == null ? 0f : Fonts.BOLD.getWidth(row.value, font * 0.9f) + HudTheme.grid(2.5f))
+                    + inset;
             if (width > widest) widest = width;
         }
         return HudTheme.snap(widest);
@@ -143,7 +158,7 @@ public abstract class GlassListElement extends AbstractHudElement {
             Row row = rows.get(i);
             present.add(row.id);
             live.put(row.id, row);
-            fades.computeIfAbsent(row.id, key -> new HudAnim.Fade(0.3f, 0.22f)).direction(true);
+            fades.computeIfAbsent(row.id, key -> new HudAnim.Fade(0.32f, 0.2f)).direction(true);
             slides.computeIfAbsent(row.id, key -> new HudAnim.Spring(0f, 190f, 18f));
         }
 
@@ -166,12 +181,12 @@ public abstract class GlassListElement extends AbstractHudElement {
 
         float scale = HudTheme.scale();
         float font = HudTheme.UNIT * 1.5f * scale;
-        float pad = HudTheme.grid(1.5f);
-        float inset = HudTheme.grid(1f);
-        float header = HudTheme.grid(3.75f);
+        float rail = HudTheme.railWidth();
+        float inset = HudTheme.grid(1.25f);
+        float gap = HudTheme.grid(1f);
+        float header = HudTheme.grid(3.5f);
         float rowHeight = HudTheme.grid(3f);
         float iconSize = HudTheme.grid(2.25f);
-        float chipSize = HudTheme.grid(2.5f);
         float radius = getRoundingRadius();
 
         float shownRows = 0f;
@@ -180,7 +195,7 @@ public abstract class GlassListElement extends AbstractHudElement {
         }
 
         float targetWidth = measuredWidth;
-        float targetHeight = header + shownRows * rowHeight + pad * 0.75f;
+        float targetHeight = header + shownRows * rowHeight + inset * 0.6f;
 
         if (widthSpring.get() <= 0.5f) widthSpring.set(targetWidth);
         if (heightSpring.get() <= 0.5f) heightSpring.set(targetHeight);
@@ -197,14 +212,21 @@ public abstract class GlassListElement extends AbstractHudElement {
         HudTheme.panel(x, y, width, height, radius, a);
         Scissor.enable(x, y, width, height, 2f);
 
-        HudTheme.chip(x + inset, y + (header - chipSize) / 2f, chipSize, chipSize, HudTheme.grid(0.75f), a);
-        iconFont.draw(iconGlyph, x + inset + chipSize * 0.24f,
-                y + (header - chipSize) / 2f + chipSize * 0.2f, font * 1.1f, HudTheme.accent(a, 0.4f));
+        // Header: everything starts past the rail so nothing sits on top of it.
+        float contentX = x + rail + inset;
+        float glyphSize = font * 1.15f;
+        iconFont.draw(iconGlyph, contentX, y + header / 2f - glyphSize * 0.55f, glyphSize,
+                HudTheme.accent(a, 0.4f));
 
-        Fonts.BOLD.draw(title, x + inset + chipSize + inset, y + header / 2f - font * 0.78f, font,
-                HudTheme.text(a));
+        float titleX = contentX + iconFont.getWidth(iconGlyph, glyphSize) + gap;
+        Fonts.BOLD.draw(title, titleX, y + header / 2f - font * 0.78f, font, HudTheme.text(a));
 
-        HudTheme.divider(x + inset, y + header - HudTheme.grid(0.35f), width - inset * 2f, a * 0.75f);
+        String counter = String.valueOf(live.size());
+        float counterWidth = Fonts.BOLD.getWidth(counter, font * 0.85f);
+        Fonts.BOLD.draw(counter, x + width - inset - counterWidth, y + header / 2f - font * 0.72f,
+                font * 0.85f, HudTheme.dim(a * 0.85f));
+
+        HudTheme.divider(contentX, y + header - HudTheme.grid(0.3f), width - rail - inset * 2f, a * 0.8f);
 
         float rowY = y + header;
         int index = 0;
@@ -221,45 +243,48 @@ public abstract class GlassListElement extends AbstractHudElement {
             }
 
             float rowAlpha = a * progress;
-            float slideOffset = (1f - fade.value()) * HudTheme.grid(3f);
+            float pop = fade.value();
+
             // The spring works on the offset inside the card, never on absolute screen
             // coordinates, so moving the element does not drag the text behind it.
             float localY = rowY - y;
             if (slide.get() <= 0.5f) slide.set(localY);
             float animatedY = y + slide.update(localY, dt);
 
-            float rowX = x + inset + slideOffset;
-            float textY = animatedY + rowHeight / 2f - font * 0.78f;
+            // Two different entrances on purpose: the label drops in from above while the
+            // value slides in from the right, so a new row reads as one composed movement.
+            float dropIn = (1f - pop) * -HudTheme.grid(1.5f);
+            float valueIn = (1f - pop) * HudTheme.grid(2f);
+            float lineY = animatedY + dropIn;
+            float textY = lineY + rowHeight / 2f - font * 0.78f;
 
             if (row.icon != null) {
-                row.icon.draw(context, rowX, animatedY + (rowHeight - iconSize) / 2f, iconSize, rowAlpha);
+                row.icon.draw(context, contentX, lineY + (rowHeight - iconSize) / 2f, iconSize, rowAlpha);
             } else {
-                HudTheme.accentDot(rowX + iconSize * 0.28f, animatedY + rowHeight / 2f - HudTheme.grid(0.3f),
-                        HudTheme.grid(0.65f), rowAlpha, index * 0.5f);
+                HudTheme.accentDot(contentX + iconSize * 0.3f, lineY + rowHeight / 2f - HudTheme.grid(0.3f),
+                        HudTheme.grid(0.6f), rowAlpha, index * 0.5f);
             }
 
-            float labelX = rowX + iconSize + inset;
+            float labelX = contentX + iconSize + gap;
             float labelAlpha = row.warning ? rowAlpha * HudTheme.blink() : rowAlpha;
             Fonts.BOLD.draw(row.label, labelX, textY, font, HudTheme.text(labelAlpha));
 
             if (row.suffix != null) {
-                Fonts.BOLD.draw(row.suffix, labelX + Fonts.BOLD.getWidth(row.label, font) + inset,
+                Fonts.BOLD.draw(row.suffix, labelX + Fonts.BOLD.getWidth(row.label, font) + gap * 0.5f,
                         textY + HudTheme.grid(0.075f), font * 0.85f, HudTheme.dim(rowAlpha));
             }
 
             if (row.value != null) {
                 float valueWidth = Fonts.BOLD.getWidth(row.value, font * 0.9f);
-                float chipWidth = valueWidth + HudTheme.grid(1.5f);
-                float chipX = x + width - inset - chipWidth - slideOffset;
-                HudTheme.chip(chipX, animatedY + rowHeight / 2f - HudTheme.grid(1.15f), chipWidth,
-                        HudTheme.grid(2.3f), HudTheme.grid(0.65f), rowAlpha * 0.9f);
-                Fonts.BOLD.draw(row.value, chipX + HudTheme.grid(0.75f), textY + HudTheme.grid(0.05f),
-                        font * 0.9f, HudTheme.dimBright(labelAlpha));
+                Fonts.BOLD.draw(row.value, x + width - inset - valueWidth + valueIn,
+                        textY + HudTheme.grid(0.05f), font * 0.9f, HudTheme.dimBright(labelAlpha));
             }
 
             if (row.progress >= 0f) {
-                HudTheme.progress(rowX, animatedY + rowHeight - HudTheme.grid(0.55f),
-                        width - inset * 2f - slideOffset, HudTheme.grid(0.275f), row.progress, rowAlpha * 0.85f);
+                float trackX = labelX;
+                float trackWidth = Math.max(0f, x + width - inset - trackX);
+                HudTheme.progress(trackX, lineY + rowHeight - HudTheme.grid(0.5f), trackWidth,
+                        HudTheme.grid(0.25f), row.progress, rowAlpha * 0.9f);
             }
 
             rowY += rowHeight * progress;
