@@ -6,13 +6,26 @@ import rich.events.api.types.Priority;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class EventManager {
-    private static final Map<Class<? extends Event>, List<MethodData>> REGISTRY_MAP = new HashMap<>();
+
+    /**
+     * Concurrent on purpose. {@link #callEvent} reads this map from the render and client
+     * threads every frame, while register/unregister structurally modify it whenever a
+     * module is toggled or a config is reloaded. A plain HashMap can return null for a
+     * present key while another thread is resizing it, which silently drops every handler
+     * of that event until the next registration.
+     */
+    private static final Map<Class<? extends Event>, List<MethodData>> REGISTRY_MAP = new ConcurrentHashMap<>();
+
+    /** Handlers that already reported a failure, so a broken one cannot spam the console every frame. */
+    private static final Set<String> REPORTED_FAILURES = ConcurrentHashMap.newKeySet();
 
     public EventManager() {}
 
@@ -45,34 +58,35 @@ public final class EventManager {
     }
 
     public static void unregister(Object object, Class<? extends Event> eventClass) {
-        if (REGISTRY_MAP.containsKey(eventClass)) {
-            REGISTRY_MAP.get(eventClass).removeIf(data -> data.source().equals(object));
+        final List<MethodData> dataList = REGISTRY_MAP.get(eventClass);
+
+        if (dataList != null) {
+            dataList.removeIf(data -> data.source().equals(object));
             cleanMap(true);
         }
     }
 
     private static void register(Method method, Object object) {
         @SuppressWarnings("unchecked")
-        Class<? extends Event> indexClass = (Class<? extends Event>) method.getParameterTypes()[0];
+        final Class<? extends Event> indexClass = (Class<? extends Event>) method.getParameterTypes()[0];
         final MethodData data = new MethodData(object, method, method.getAnnotation(EventHandler.class).value());
 
         if (!data.target().canAccess(data.source())) {
             data.target().setAccessible(true);
         }
 
-        if (REGISTRY_MAP.containsKey(indexClass)) {
-            if (!REGISTRY_MAP.get(indexClass).contains(data)) {
-                REGISTRY_MAP.get(indexClass).add(data);
-                sortListValue(indexClass);
-            }
-        } else {
-            REGISTRY_MAP.put(indexClass, new CopyOnWriteArrayList<>());
-            REGISTRY_MAP.get(indexClass).add(data);
+        final List<MethodData> dataList = REGISTRY_MAP.computeIfAbsent(indexClass, key -> new CopyOnWriteArrayList<>());
+
+        if (dataList.contains(data)) {
+            return;
         }
+
+        dataList.add(data);
+        sortListValue(indexClass);
     }
 
     public static void removeEntry(Class<? extends Event> indexClass) {
-        REGISTRY_MAP.entrySet().removeIf(entry -> entry.getKey().equals(indexClass));
+        REGISTRY_MAP.remove(indexClass);
     }
 
     public static void cleanMap(boolean onlyEmptyEntries) {
@@ -84,17 +98,23 @@ public final class EventManager {
     }
 
     private static void sortListValue(Class<? extends Event> indexClass) {
-        List<MethodData> sortedList = new CopyOnWriteArrayList<>();
+        final List<MethodData> current = REGISTRY_MAP.get(indexClass);
+
+        if (current == null) {
+            return;
+        }
+
+        final List<MethodData> sorted = new ArrayList<>(current.size());
 
         for (final byte priority : Priority.VALUE_ARRAY) {
-            for (final MethodData data : REGISTRY_MAP.get(indexClass)) {
+            for (final MethodData data : current) {
                 if (data.priority() == priority) {
-                    sortedList.add(data);
+                    sorted.add(data);
                 }
             }
         }
 
-        REGISTRY_MAP.put(indexClass, sortedList);
+        REGISTRY_MAP.put(indexClass, new CopyOnWriteArrayList<>(sorted));
     }
 
     private static boolean isMethodBad(Method method) {
@@ -106,52 +126,56 @@ public final class EventManager {
     }
 
     public static Event callEvent(final Event event) {
-        List<MethodData> dataList = REGISTRY_MAP.get(event.getClass());
+        final List<MethodData> dataList = REGISTRY_MAP.get(event.getClass());
 
-        if (dataList != null) {
-            if (event instanceof EventStoppable stoppable) {
-                for (final MethodData data : dataList) {
-                    invoke(data, event);
+        if (dataList == null) {
+            return event;
+        }
 
-                    if (stoppable.isStopped()) {
-                        break;
-                    }
+        if (event instanceof EventStoppable stoppable) {
+            for (final MethodData data : dataList) {
+                invoke(data, event);
+
+                if (stoppable.isStopped()) {
+                    break;
                 }
-            } else {
-                for (final MethodData data : dataList) {
-                    try {
-                        invoke(data, event);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                }
+            }
+        } else {
+            for (final MethodData data : dataList) {
+                invoke(data, event);
             }
         }
 
         return event;
     }
 
-    private static void invoke(MethodData data, Event argument) {
+    private static void invoke(final MethodData data, final Event argument) {
         try {
             data.target().invoke(data.source(), argument);
-        } catch (IllegalAccessException e) {
-            String errorMessage = "Illegal access to method. ";
-            errorMessage += "Method: " + data.target().getName() + ", ";
-            errorMessage += "Argument: " + argument.toString() + ", ";
-            errorMessage += "Log: " + e.fillInStackTrace();
-            System.out.println(errorMessage);
-        } catch (IllegalArgumentException e) {
-            String errorMessage = "Illegal arguments passed to method. ";
-            errorMessage += "Method: " + data.target().getName() + ", ";
-            errorMessage += "Argument: " + argument.toString() + ", ";
-            errorMessage += "Log: " + e.getCause();
-            System.out.println(errorMessage);
         } catch (InvocationTargetException e) {
-            String errorMessage = "Exception occurred within invoked method. ";
-            errorMessage += "Method: " + data.target().getName() + ", ";
-            errorMessage += "Argument: " + argument.toString() + ", ";
-            errorMessage += "Log: " + e.getCause();
-            System.out.println(errorMessage);
+            reportOnce(data, e.getCause());
+        } catch (IllegalAccessException | IllegalArgumentException e) {
+            reportOnce(data, e);
+        }
+    }
+
+    /**
+     * Reports the first failure of a handler and stays silent afterwards. The previous
+     * implementation rebuilt an error string with +=, called fillInStackTrace() and wrote
+     * to System.out on every dispatch, so a single throwing handler cost a full stack walk
+     * plus a synchronized console write every frame.
+     */
+    private static void reportOnce(final MethodData data, final Throwable cause) {
+        final String key = data.source().getClass().getName() + '#' + data.target().getName();
+
+        if (!REPORTED_FAILURES.add(key)) {
+            return;
+        }
+
+        System.err.println("[EventManager] handler failed, further reports suppressed: " + key);
+
+        if (cause != null) {
+            cause.printStackTrace();
         }
     }
 

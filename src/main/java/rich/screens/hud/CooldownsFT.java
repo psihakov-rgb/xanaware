@@ -1,6 +1,5 @@
 package rich.screens.hud;
 
-import net.minecraft.component.DataComponentTypes;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -19,8 +18,8 @@ import java.util.Set;
 
 /**
  * Cooldowns of FunTime server items only.
- * Custom named server items and the known FunTime item set are listed here,
- * on any other server the element stays hidden.
+ * Membership is decided by the known FunTime item set, so a renamed vanilla item
+ * is not mistaken for a server item. On any other server the element stays hidden.
  */
 public class CooldownsFT extends GlassListElement {
 
@@ -50,8 +49,12 @@ public class CooldownsFT extends GlassListElement {
         super("CooldownsFT", "CooldownsFT", Fonts.ICONS, "D", 10, 90);
     }
 
+    /**
+     * Only the known FunTime item set counts. The previous version also returned true for
+     * anything carrying a CUSTOM_NAME component, which matched every anvil-renamed item in
+     * the inventory and filled the element with unrelated rows.
+     */
     private boolean isFunTimeItem(ItemStack stack) {
-        if (stack.contains(DataComponentTypes.CUSTOM_NAME)) return true;
         return FT_ITEMS.contains(stack.getItem());
     }
 
